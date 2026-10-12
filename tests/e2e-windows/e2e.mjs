@@ -1,8 +1,5 @@
 // Drives Pontoon's real WebView2 over CDP. Called by run-e2e.ps1.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { chromium } from "playwright";
 
 const scenario = process.argv[2];
@@ -18,6 +15,11 @@ async function waitForPage(predicate, timeoutMs = 60_000) {
   }
   throw new Error(`no page matched; pages: ${browser.contexts().flatMap((c) => c.pages().map((p) => p.url())).join(", ")}`);
 }
+
+// Anything thrown outside a check (a page that never appears, say) is
+// reported as a failure instead of ending the run silently.
+process.on("uncaughtException", (e) => { console.log(`  FAIL ${scenario}: ${e.stack || e}`); process.exit(1); });
+process.on("unhandledRejection", (e) => { console.log(`  FAIL ${scenario}: ${e?.stack || e}`); process.exit(1); });
 
 const check = async (name, fn) => {
   try { await fn(); console.log(`  ok   ${name}`); }
@@ -133,8 +135,8 @@ if (scenario === "online") {
   });
 }
 
-// The fonts chosen before the test, restored by the relaunch scenario.
-const savedFontFile = join(tmpdir(), "pontoon-e2e-font.json");
+// run-e2e.ps1 backs up settings.json before the font scenario and puts it
+// back byte for byte at the end, so these scenarios may change the fonts.
 // Fonts every Chinese Windows install has, and that look clearly different.
 const TEST = { ui: "KaiTi", chat: "SimSun", code: "Courier New" };
 
@@ -177,7 +179,7 @@ if (scenario === "font") {
   await check("current choice is readable", async () => {
     const r = await invoke(settings, "font_get", {});
     assert.ok(!r.error, r.error);
-    writeFileSync(savedFontFile, JSON.stringify(r.value));
+    assert.deepEqual(Object.keys(r.value).sort(), ["chat", "code", "ui"]);
   });
   await check("interface, chat and code fonts apply separately", async () => {
     for (const [part, tab] of [["ui", "界面字体"], ["chat", "对话字体"], ["code", "代码字体"]]) {
@@ -241,10 +243,9 @@ if (scenario === "relaunch") {
     assert.equal(await page.locator("#raft-desktop-handshake-recovery").count(), 0);
   });
   // Started with --font-settings: check the fonts from the font scenario
-  // survived the restart, then put back what was chosen before the test.
+  // survived the restart.
   const settings = await waitForPage((u) => u.endsWith("/settings.html"), 30_000);
   await settings.waitForLoadState("load");
-  const saved = JSON.parse(readFileSync(savedFontFile, "utf8"));
   await check("font choices survive an app restart", async () => {
     const tested = await settings.evaluate(() => window.__TAURI_INTERNALS__.invoke("font_get", {}));
     assert.deepEqual(tested, TEST);
@@ -252,11 +253,7 @@ if (scenario === "relaunch") {
     const f = await fontsOnPage(page);
     assert.ok(uses(f.ui, TEST.ui) && uses(f.chat, TEST.chat) && uses(f.code, TEST.code), JSON.stringify(f));
   });
-  await check("restoring the previous fonts", async () => {
-    await settings.evaluate((f) => window.__TAURI_INTERNALS__.invoke("font_set", { fonts: f }), saved);
-    assert.deepEqual(await settings.evaluate(() => window.__TAURI_INTERNALS__.invoke("font_get", {})), saved);
-    await page.evaluate(() => document.getElementById("pontoon-e2e-probe")?.remove());
-  });
+  await page.evaluate(() => document.getElementById("pontoon-e2e-probe")?.remove());
 }
 
 if (scenario === "offline") {

@@ -32,10 +32,25 @@ function Wait-Cdp {
 }
 function Run-Node($scenario) {
   # Print node's output instead of returning it, so the function returns only the exit code.
-  & node (Join-Path $PSScriptRoot "e2e.mjs") $scenario | Out-Host
+  # Include node's stderr; under "Stop", Windows PowerShell would turn its lines into terminating errors.
+  $ErrorActionPreference = "Continue"
+  & node (Join-Path $PSScriptRoot "e2e.mjs") $scenario 2>&1 | ForEach-Object { "$_" } | Out-Host
   return $LASTEXITCODE
 }
 
+# The font scenarios change the font settings; keep an exact copy of the
+# user's settings.json and put it back at the end, whatever happens.
+$settingsFile = Join-Path $env:APPDATA "build.pontoon.desktop\settings.json"
+$settingsBackup = Join-Path $env:TEMP "pontoon-e2e-settings-backup.json"
+$hadSettings = Test-Path $settingsFile
+if ($hadSettings) { Copy-Item $settingsFile $settingsBackup -Force }
+function Show-PontoonProcesses {
+  Get-CimInstance Win32_Process -Filter "Name='pontoon.exe'" | ForEach-Object {
+    Write-Host ("      pid {0} parent {1} session {2}: {3}" -f $_.ProcessId, $_.ParentProcessId, $_.SessionId, $_.CommandLine)
+  }
+}
+
+try {
 Write-Host "== Install"
 Stop-Pontoon
 $p = Start-Process -FilePath $Installer -ArgumentList "/S" -Wait -PassThru
@@ -60,7 +75,11 @@ if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft") -ne [Sy
 
 Write-Host "== Font settings"
 # A second launch with --font-settings opens the settings window in the running app.
+$before = @(Get-Process pontoon).Count
 Start-Process -FilePath $exe -ArgumentList "--font-settings" | Out-Null
+Start-Sleep -Seconds 4
+$after = @(Get-Process pontoon).Count
+if ($after -eq $before) { Pass "--font-settings hands off to the running instance" } else { Fail "--font-settings started a second instance ($before -> $after)"; Show-PontoonProcesses }
 if ((Run-Node "font") -eq 0) { Pass "font settings scenario" } else { Fail "font settings scenario" }
 
 Write-Host "== Single instance"
@@ -68,7 +87,7 @@ $before = @(Get-Process pontoon).Count
 Start-Process -FilePath $exe | Out-Null
 Start-Sleep -Seconds 4
 $after = @(Get-Process pontoon).Count
-if ($after -eq $before) { Pass "second launch hands off to the running instance" } else { Fail "process count went from $before to $after" }
+if ($after -eq $before) { Pass "second launch hands off to the running instance" } else { Fail "process count went from $before to $after"; Show-PontoonProcesses }
 
 Write-Host "== Close to tray"
 # Close the font settings window first, so the main window is the one closed below.
@@ -103,6 +122,14 @@ if (-not $KeepInstalled) {
   $p = Start-Process -FilePath $un -ArgumentList "/S" -Wait -PassThru
   Start-Sleep -Seconds 3
   if (-not (Test-Path $exe)) { Pass "silent uninstall" } else { Fail "pontoon.exe still present after uninstall" }
+}
+
+} finally {
+  Write-Host "== Restore font settings"
+  Stop-Pontoon
+  if ($hadSettings) { Copy-Item $settingsBackup $settingsFile -Force; Remove-Item $settingsBackup -Force }
+  elseif (Test-Path $settingsFile) { Remove-Item $settingsFile -Force }
+  if ($hadSettings) { Write-Host "settings.json restored" } else { Write-Host "settings.json removed (there was none before)" }
 }
 
 Write-Host ""

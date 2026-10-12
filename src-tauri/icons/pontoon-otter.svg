@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Pontoon's icon: a sea otter floating on its back. A group of otters
+       floating together is called a raft. -->
+  <defs>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4FD1E8"/>
+      <stop offset="1" stop-color="#1F78B4"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="40" y="40" width="944" height="944" rx="220"/></clipPath>
+  </defs>
+  <rect x="40" y="40" width="944" height="944" rx="220" fill="url(#water)"/>
+  <g clip-path="url(#tile)">
+    <!-- body -->
+    <ellipse cx="512" cy="930" rx="330" ry="220" fill="#5A3823"/>
+    <!-- ears -->
+    <ellipse cx="206" cy="470" rx="48" ry="56" fill="#5A3823"/>
+    <ellipse cx="818" cy="470" rx="48" ry="56" fill="#5A3823"/>
+    <!-- head: sea otters have a pale face -->
+    <ellipse cx="512" cy="540" rx="320" ry="270" fill="#E8D2B0"/>
+    <path d="M232 450 C 300 300 724 300 792 450 C 700 360 324 360 232 450 Z" fill="#C9A77E"/>
+    <!-- eyes -->
+    <circle cx="384" cy="510" r="38" fill="#1E1714"/>
+    <circle cx="640" cy="510" r="38" fill="#1E1714"/>
+    <circle cx="372" cy="497" r="13" fill="#FFFFFF"/>
+    <circle cx="628" cy="497" r="13" fill="#FFFFFF"/>
+    <!-- whisker pads -->
+    <circle cx="456" cy="650" r="78" fill="#FFF8EE"/>
+    <circle cx="568" cy="650" r="78" fill="#FFF8EE"/>
+    <path d="M374 640 L 268 618 M 376 672 L 272 680 M 650 640 L 756 618 M 648 672 L 752 680" stroke="#A88566" stroke-width="10" stroke-linecap="round"/>
+    <!-- nose -->
+    <path d="M462 580 Q 512 562 562 580 Q 556 628 512 638 Q 468 628 462 580 Z" fill="#2B1B12"/>
+    <path d="M512 638 L 512 668" stroke="#2B1B12" stroke-width="14" stroke-linecap="round"/>
+    <!-- paws -->
+    <ellipse cx="372" cy="826" rx="70" ry="54" fill="#47291A"/>
+    <ellipse cx="652" cy="826" rx="70" ry="54" fill="#47291A"/>
+    <!-- water -->
+    <path d="M0 860 C 120 820 220 820 340 860 C 460 900 564 900 684 860 C 804 820 904 820 1024 860 L 1024 1024 L 0 1024 Z" fill="#E6F8FC"/>
+    <path d="M0 930 C 120 890 220 890 340 930 C 460 970 564 970 684 930 C 804 890 904 890 1024 930 L 1024 1024 L 0 1024 Z" fill="#B6E9F4"/>
+  </g>
+</svg>

@@ -16,8 +16,9 @@ $failures = 0
 function Pass($m) { Write-Host "PASS  $m" -ForegroundColor Green }
 function Fail($m) { Write-Host "FAIL  $m" -ForegroundColor Red; $script:failures++ }
 function Stop-Pontoon { Get-Process pontoon -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1 }
-function Start-Pontoon($extraEnv) {
+function Start-Pontoon($extraEnv, $arguments = "") {
   $psi = New-Object System.Diagnostics.ProcessStartInfo $exe
+  $psi.Arguments = $arguments
   $psi.UseShellExecute = $false
   $psi.EnvironmentVariables["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--remote-debugging-port=9222"
   foreach ($k in $extraEnv.Keys) { $psi.EnvironmentVariables[$k] = $extraEnv[$k] }
@@ -51,8 +52,16 @@ if ((Run-Node "online") -eq 0) { Pass "online scenario" } else { Fail "online sc
 
 # Look the window up by its exact title: the process also owns a hidden
 # single-instance window, so MainWindowTitle can name the wrong one.
-Add-Type -Namespace Pontoon -Name Win32 -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern System.IntPtr FindWindow(string cls, string title);'
+Add-Type -Namespace Pontoon -Name Win32 -MemberDefinition @'
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern System.IntPtr FindWindow(string cls, string title);
+[DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr hwnd, uint msg, System.IntPtr w, System.IntPtr l);
+'@
 if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft") -ne [System.IntPtr]::Zero) { Pass "native window title follows window.setServerTitle" } else { Fail "no top-level window titled 'E2E check | Raft'" }
+
+Write-Host "== Font settings"
+# A second launch with --font-settings opens the settings window in the running app.
+Start-Process -FilePath $exe -ArgumentList "--font-settings" | Out-Null
+if ((Run-Node "font") -eq 0) { Pass "font settings scenario" } else { Fail "font settings scenario" }
 
 Write-Host "== Single instance"
 $before = @(Get-Process pontoon).Count
@@ -62,14 +71,17 @@ $after = @(Get-Process pontoon).Count
 if ($after -eq $before) { Pass "second launch hands off to the running instance" } else { Fail "process count went from $before to $after" }
 
 Write-Host "== Close to tray"
+# Close the font settings window first, so the main window is the one closed below.
+$settingsWindow = [Pontoon.Win32]::FindWindow([NullString]::Value, "字体设置 · Pontoon")
+if ($settingsWindow -ne [System.IntPtr]::Zero) { [Pontoon.Win32]::PostMessage($settingsWindow, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero) | Out-Null; Start-Sleep -Seconds 1 }
 $main = Get-Process pontoon | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if ($main) { $main.CloseMainWindow() | Out-Null }
 Start-Sleep -Seconds 2
 if (Get-Process -Id $app.Id -ErrorAction SilentlyContinue) { Pass "closing the window keeps the app running" } else { Fail "app exited when the window was closed" }
 Stop-Pontoon
 
-Write-Host "== Relaunch keeps the sign-in"
-$app = Start-Pontoon @{}
+Write-Host "== Relaunch keeps the sign-in and the font"
+$app = Start-Pontoon @{} "--font-settings"
 if (Wait-Cdp) {
   if ((Run-Node "relaunch") -eq 0) { Pass "relaunch scenario" } else { Fail "relaunch scenario" }
 } else { Fail "no WebView2 debugging endpoint (relaunch)" }

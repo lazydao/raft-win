@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>字体设置 · Pontoon</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff8e1; --fg: #1c1b17; --muted: #6b665a; --line: #e4dcc4; --hover: #f6edd2;
+    --accent: #1c1b17; --accent-fg: #fff8e1; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1b17; --fg: #f4efe1; --muted: #a8a293; --line: #3a372f; --hover: #2a2822;
+    --accent: #f4efe1; --accent-fg: #1c1b17; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif; font-size: 14px; }
+  main { height: 100%; display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+  h1 { font-size: 18px; margin: 0; }
+  p { margin: 0; color: var(--muted); line-height: 1.5; }
+  input { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+  #list { flex: 1; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; margin: 0; padding: 4px; list-style: none; }
+  #list li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+  #list li:hover { background: var(--hover); }
+  #list li[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); }
+  #list li small { color: inherit; opacity: 0.6; font-family: "Segoe UI", system-ui, sans-serif; white-space: nowrap; }
+  #preview { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 16px; line-height: 1.5; min-height: 52px; }
+  .actions { display: flex; align-items: center; gap: 8px; }
+  .actions span { flex: 1; color: var(--muted); }
+  button { font: inherit; padding: 8px 18px; border-radius: 8px; border: 1px solid var(--accent); cursor: pointer; background: transparent; color: var(--fg); }
+  button.primary { background: var(--accent); color: var(--accent-fg); }
+</style>
+</head>
+<body>
+<main>
+  <h1>全局字体</h1>
+  <p>选一个字体，Raft 里的文字都会换成它。代码保持等宽字体。</p>
+  <input id="search" type="search" placeholder="搜索字体" aria-label="搜索字体" autocomplete="off">
+  <ul id="list" role="listbox" aria-label="已安装的字体"></ul>
+  <div id="preview">今天下午三点开会，记得带上周报。The quick brown fox jumps over the lazy dog. 0123456789</div>
+  <div class="actions">
+    <span id="status" role="status"></span>
+    <button id="apply" class="primary" type="button">应用</button>
+  </div>
+</main>
+<script>
+(function () {
+  // Wrapped so names like "status" don't collide with window properties.
+  var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+  var list = document.getElementById("list");
+  var preview = document.getElementById("preview");
+  var statusEl = document.getElementById("status");
+  var fonts = [];
+  var selected = null;   // null means Raft's own fonts
+  var saved = null;
+
+  function quote(family) { return '"' + family + '", sans-serif'; }
+
+  function render() {
+    var q = document.getElementById("search").value.trim().toLowerCase();
+    list.textContent = "";
+    var rows = [{ family: null, display: "Raft 默认字体" }].concat(fonts.filter(function (f) {
+      return !q || f.display.toLowerCase().indexOf(q) >= 0 || f.family.toLowerCase().indexOf(q) >= 0;
+    }));
+    rows.forEach(function (f) {
+      var li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.setAttribute("aria-selected", String(f.family === selected));
+      li.dataset.family = f.family || "";
+      var name = document.createElement("span");
+      name.textContent = f.display;
+      if (f.family) name.style.fontFamily = quote(f.family);
+      li.appendChild(name);
+      if (f.family && f.family !== f.display) {
+        var small = document.createElement("small");
+        small.textContent = f.family;
+        li.appendChild(small);
+      }
+      li.addEventListener("click", function () { select(f.family); });
+      list.appendChild(li);
+    });
+  }
+
+  function select(family) {
+    selected = family;
+    preview.style.fontFamily = family ? quote(family) : "";
+    statusEl.textContent = family === saved ? "" : "未应用";
+    render();
+  }
+
+  document.getElementById("search").addEventListener("input", render);
+  document.getElementById("apply").addEventListener("click", function () {
+    invoke("font_set", { family: selected }).then(function () {
+      saved = selected;
+      statusEl.textContent = "已应用";
+    }, function (e) { statusEl.textContent = "应用失败：" + e; });
+  });
+
+  Promise.all([invoke("font_list", {}), invoke("font_get", {})]).then(function (r) {
+    fonts = r[0] || [];
+    saved = r[1] || null;
+    select(saved);
+    statusEl.textContent = "";
+    var current = list.querySelector('[aria-selected="true"]');
+    if (current) current.scrollIntoView({ block: "center" });
+  }, function (e) { statusEl.textContent = "读取字体失败：" + e; });
+})();
+</script>
+</body>
+</html>

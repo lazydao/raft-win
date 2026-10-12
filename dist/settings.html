@@ -19,6 +19,7 @@
   #list { flex: 1; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; margin: 0; padding: 4px; list-style: none; }
   #list li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
   #list li:hover { background: var(--hover); }
+  #list li.loading { color: var(--muted); cursor: default; background: none; }
   #list li[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); }
   #list li small { color: inherit; opacity: 0.6; font-family: "Segoe UI", system-ui, sans-serif; white-space: nowrap; }
   #preview { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 16px; line-height: 1.5; min-height: 52px; white-space: pre-wrap; }
@@ -45,7 +46,7 @@
   <p id="hint"></p>
   <input id="search" type="search" placeholder="搜索字体" aria-label="搜索字体" autocomplete="off">
   <label class="mono" hidden><input id="mono-only" type="checkbox" checked> 只显示等宽字体</label>
-  <ul id="list" role="listbox" aria-label="已安装的字体"></ul>
+  <ul id="list" role="listbox" aria-label="已安装的字体"><li class="loading" aria-disabled="true">正在读取已安装的字体…</li></ul>
   <div id="preview"></div>
   <div class="actions">
     <span id="status" role="status"></span>
@@ -159,7 +160,7 @@
     chosen = { ui: saved.ui, chat: saved.chat, code: saved.code };
     showPart("ui");
     statusEl.textContent = "";
-  }, function (e) { statusEl.textContent = "读取字体失败：" + e; });
+  }, function (e) { list.textContent = ""; statusEl.textContent = "读取字体失败：" + e; });
 })();
 </script>
 </body>

@@ -4,6 +4,7 @@ fn main() {
             "desktop_handshake",
             "window_focus",
             "window_bind_server",
+            "window_open_server",
             "window_set_server_title",
             "recovery_retry",
             "recovery_quit",

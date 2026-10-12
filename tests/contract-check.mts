@@ -20,5 +20,5 @@ for (const envelope of envelopes) {
     console.log(JSON.stringify(envelope));
   }
 }
-if (envelopes.length < 9) failed += 1;
+if (envelopes.length < 13) failed += 1;
 process.exit(failed ? 1 : 0);

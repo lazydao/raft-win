@@ -44,6 +44,12 @@ $settingsFile = Join-Path $env:APPDATA "build.pontoon.desktop\settings.json"
 $settingsBackup = Join-Path $env:TEMP "pontoon-e2e-settings-backup.json"
 $hadSettings = Test-Path $settingsFile
 if ($hadSettings) { Copy-Item $settingsFile $settingsBackup -Force }
+# Same for the list of open server windows. Start without it, so only the
+# main window opens and the test's own second window is the only other one.
+$windowsFile = Join-Path $env:APPDATA "build.pontoon.desktop\windows.json"
+$windowsBackup = Join-Path $env:TEMP "pontoon-e2e-windows-backup.json"
+$hadWindows = Test-Path $windowsFile
+if ($hadWindows) { Copy-Item $windowsFile $windowsBackup -Force; Remove-Item $windowsFile -Force }
 function Show-PontoonProcesses {
   Get-CimInstance Win32_Process -Filter "Name='pontoon.exe'" | ForEach-Object {
     Write-Host ("      pid {0} parent {1} session {2}: {3}" -f $_.ProcessId, $_.ParentProcessId, $_.SessionId, $_.CommandLine)
@@ -91,20 +97,44 @@ if ((Run-Node "font") -eq 0) { Pass "font settings scenario" } else { Fail "font
 Write-Host "== Single instance"
 Test-Handoff "second launch hands off to the running instance"
 
+Write-Host "== Server windows"
+# The scenario writes this file first thing; if it dies before that, the window checks are skipped.
+$multiFile = Join-Path $env:TEMP "pontoon-e2e-multiwindow.json"
+Remove-Item $multiFile -Force -ErrorAction SilentlyContinue
+if ((Run-Node "multiwindow") -eq 0) { Pass "multiwindow scenario" } else { Fail "multiwindow scenario" }
+$multi = if (Test-Path $multiFile) { Get-Content $multiFile -Raw | ConvertFrom-Json } else { $null }
+if ($multi) {
+  if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E second window | Raft") -ne [System.IntPtr]::Zero) { Pass "second server window is a native top-level window" } else { Fail "no window titled 'E2E second window | Raft'" }
+}
+
 Write-Host "== Close to tray"
 # Close the font settings window first, so the main window is the one closed below.
 $settingsWindow = [Pontoon.Win32]::FindWindow([NullString]::Value, "字体设置 · Pontoon")
 if ($settingsWindow -ne [System.IntPtr]::Zero) { [Pontoon.Win32]::PostMessage($settingsWindow, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero) | Out-Null; Start-Sleep -Seconds 1 }
-$main = Get-Process pontoon | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-if ($main) { $main.CloseMainWindow() | Out-Null }
+# Find the main window by title: with a second server window open, the
+# process's MainWindowHandle can be either of them.
+$mainWindow = [Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft")
+if ($mainWindow -ne [System.IntPtr]::Zero) { [Pontoon.Win32]::PostMessage($mainWindow, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero) | Out-Null } else { Fail "main window not found by title" }
 Start-Sleep -Seconds 2
 if (Get-Process -Id $app.Id -ErrorAction SilentlyContinue) { Pass "closing the window keeps the app running" } else { Fail "app exited when the window was closed" }
+# Quitting (here: ending the process) keeps the list of open server windows.
 Stop-Pontoon
 
 Write-Host "== Relaunch keeps the sign-in and the font"
 $app = Start-Pontoon @{} "--font-settings"
 if (Wait-Cdp) {
   if ((Run-Node "relaunch") -eq 0) { Pass "relaunch scenario" } else { Fail "relaunch scenario" }
+  if ((Run-Node "restore") -eq 0) { Pass "server windows reopen after a restart" } else { Fail "restore scenario" }
+  if ($multi) {
+    # Closing a second server window closes it for real and forgets it.
+    $second = [Pontoon.Win32]::FindWindow([NullString]::Value, "E2E second window | Raft")
+    if ($second -ne [System.IntPtr]::Zero) { [Pontoon.Win32]::PostMessage($second, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero) | Out-Null } else { Fail "second window not found after restart" }
+    Start-Sleep -Seconds 2
+    if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E second window | Raft") -eq [System.IntPtr]::Zero) { Pass "second window closes" } else { Fail "second window still open after close" }
+    if (Get-Process pontoon -ErrorAction SilentlyContinue) { Pass "closing a second window keeps the app running" } else { Fail "app exited when a second window was closed" }
+    $saved = Get-Content (Join-Path $env:APPDATA "build.pontoon.desktop\windows.json") -Raw -ErrorAction SilentlyContinue
+    if ($saved -and -not $saved.Contains($multi.id)) { Pass "a closed window is not reopened at start" } else { Fail "windows.json still lists the closed window: $saved" }
+  }
 } else { Fail "no WebView2 debugging endpoint (relaunch)" }
 Stop-Pontoon
 
@@ -127,11 +157,14 @@ if (-not $KeepInstalled) {
 }
 
 } finally {
-  Write-Host "== Restore font settings"
+  Write-Host "== Restore font settings and window list"
   Stop-Pontoon
   if ($hadSettings) { Copy-Item $settingsBackup $settingsFile -Force; Remove-Item $settingsBackup -Force }
   elseif (Test-Path $settingsFile) { Remove-Item $settingsFile -Force }
   if ($hadSettings) { Write-Host "settings.json restored" } else { Write-Host "settings.json removed (there was none before)" }
+  if ($hadWindows) { Copy-Item $windowsBackup $windowsFile -Force; Remove-Item $windowsBackup -Force }
+  elseif (Test-Path $windowsFile) { Remove-Item $windowsFile -Force }
+  if ($hadWindows) { Write-Host "windows.json restored" } else { Write-Host "windows.json removed (there was none before)" }
 }
 
 Write-Host ""

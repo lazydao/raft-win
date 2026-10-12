@@ -286,7 +286,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
             "fonts" => {
-                let _ = font::open_settings(app);
+                font::open_settings_from_handler(app);
             }
             "autostart" => {
                 let launcher = app.autolaunch();

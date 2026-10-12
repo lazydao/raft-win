@@ -1,5 +1,6 @@
-//! Global font: the user picks one installed font family, and Pontoon uses it
-//! for all of Raft's text except code, which stays monospace.
+//! Font settings: the user picks installed font families for three parts of
+//! Raft: the interface, chat messages and code. Each one left unset keeps
+//! Raft's own font, and the chat font follows the interface font when unset.
 //!
 //! The choice lives in settings.json in the app's config folder. font.js
 //! applies it at document start from localStorage, and the native side
@@ -17,13 +18,39 @@ pub const SETTINGS_WINDOW: &str = "settings";
 pub const SETTINGS_ARG: &str = "--font-settings";
 const SETTINGS_FILE: &str = "settings.json";
 
+/// The chosen family for each part; `None` keeps Raft's own font.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Fonts {
+    #[serde(default)]
+    pub ui: Option<String>,
+    #[serde(default)]
+    pub chat: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+impl Fonts {
+    fn is_valid(&self) -> bool {
+        [&self.ui, &self.chat, &self.code].iter().all(|f| f.as_deref().map_or(true, is_valid_font_family))
+    }
+}
+
 #[derive(Default)]
-pub struct FontState(Mutex<Option<String>>);
+pub struct FontState(Mutex<Fonts>);
 
 #[derive(Serialize, Deserialize, Default)]
 struct Settings {
-    #[serde(rename = "fontFamily", default, skip_serializing_if = "Option::is_none")]
-    font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fonts: Option<Fonts>,
+    /// The single font of version 0.2, read as the interface font.
+    #[serde(rename = "fontFamily", default, skip_serializing)]
+    legacy_font_family: Option<String>,
+}
+
+impl Settings {
+    fn fonts(self) -> Fonts {
+        self.fonts.unwrap_or(Fonts { ui: self.legacy_font_family, ..Fonts::default() })
+    }
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -32,6 +59,8 @@ pub struct InstalledFont {
     pub family: String,
     /// The name to show, in the system language when the font has one.
     pub display: String,
+    /// Every character has the same width, which suits code.
+    pub mono: bool,
 }
 
 /// Font family names go into CSS, so only plain names are accepted: letters
@@ -44,10 +73,10 @@ pub fn is_valid_font_family(name: &str) -> bool {
 }
 
 /// The call that hands the current choice to font.js in a page.
-pub fn apply_script(family: Option<&str>) -> String {
+pub fn apply_script(fonts: &Fonts) -> String {
     format!(
         "window.__pontoonSetFont && window.__pontoonSetFont({});",
-        serde_json::to_string(&family).unwrap()
+        serde_json::to_string(fonts).unwrap()
     )
 }
 
@@ -60,18 +89,30 @@ pub fn load(app: &AppHandle) {
     let saved = settings_path(app)
         .and_then(|p| std::fs::read(p).ok())
         .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
-        .and_then(|s| s.font_family)
-        .filter(|f| is_valid_font_family(f));
+        .map(Settings::fonts)
+        .filter(Fonts::is_valid)
+        .unwrap_or_default();
     *app.state::<FontState>().0.lock().unwrap() = saved;
 }
 
-pub fn current(app: &AppHandle) -> Option<String> {
+pub fn current(app: &AppHandle) -> Fonts {
     app.state::<FontState>().0.lock().unwrap().clone()
 }
 
 /// Sends the current choice to a server window's page.
 pub fn sync_window(window: &WebviewWindow) {
-    let _ = window.eval(apply_script(current(window.app_handle()).as_deref()));
+    let _ = window.eval(apply_script(&current(window.app_handle())));
+}
+
+/// Opens the settings window from event handlers (the tray menu, a second
+/// launch). Those run on the main thread, and creating a webview there
+/// deadlocks on Windows (see WebviewWindowBuilder::new), so it is done from
+/// another thread.
+pub fn open_settings_from_handler(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _ = open_settings(&app);
+    });
 }
 
 pub fn open_settings(app: &AppHandle) -> tauri::Result<()> {
@@ -81,41 +122,41 @@ pub fn open_settings(app: &AppHandle) -> tauri::Result<()> {
     }
     let w = WebviewWindowBuilder::new(app, SETTINGS_WINDOW, WebviewUrl::App("settings.html".into()))
         .title("字体设置 · Pontoon")
-        .inner_size(460.0, 600.0)
-        .min_inner_size(380.0, 420.0)
+        .inner_size(480.0, 640.0)
+        .min_inner_size(400.0, 480.0)
         .build()?;
     shell::show_window(&w);
     Ok(())
 }
 
 #[tauri::command]
-pub fn font_get(app: AppHandle) -> Option<String> {
+pub fn font_get(app: AppHandle) -> Fonts {
     current(&app)
 }
 
-/// Saves the choice (`None` means Raft's own fonts) and applies it right away.
+/// Saves the choice and applies it right away.
 #[tauri::command]
-pub fn font_set(app: AppHandle, family: Option<String>) -> Result<(), String> {
-    if let Some(f) = &family {
-        if !is_valid_font_family(f) {
-            return Err("invalid font family name".into());
-        }
+pub fn font_set(app: AppHandle, fonts: Fonts) -> Result<(), String> {
+    if !fonts.is_valid() {
+        return Err("invalid font family name".into());
     }
     let path = settings_path(&app).ok_or("no config folder")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let body = serde_json::to_vec_pretty(&Settings { font_family: family.clone() }).unwrap();
+    let body = serde_json::to_vec_pretty(&Settings { fonts: Some(fonts.clone()), legacy_font_family: None }).unwrap();
     std::fs::write(&path, body).map_err(|e| e.to_string())?;
-    *app.state::<FontState>().0.lock().unwrap() = family;
+    *app.state::<FontState>().0.lock().unwrap() = fonts;
     for w in crate::server_window::all(&app) {
         sync_window(&w);
     }
     Ok(())
 }
 
+/// Async so the font scan (which opens every font file to check whether it
+/// is monospace) runs off the main thread instead of freezing the windows.
 #[tauri::command]
-pub fn font_list() -> Vec<InstalledFont> {
+pub async fn font_list() -> Vec<InstalledFont> {
     let mut fonts = system_fonts();
     fonts.retain(|f| is_valid_font_family(&f.family));
     fonts.sort_by(|a, b| a.display.to_lowercase().cmp(&b.display.to_lowercase()));
@@ -125,7 +166,7 @@ pub fn font_list() -> Vec<InstalledFont> {
 
 #[cfg(windows)]
 fn system_fonts() -> Vec<InstalledFont> {
-    use windows::core::{w, BOOL, PCWSTR};
+    use windows::core::{w, Interface, BOOL, PCWSTR};
     use windows::Win32::Globalization::GetUserDefaultLocaleName;
     use windows::Win32::Graphics::DirectWrite::*;
 
@@ -158,8 +199,12 @@ fn system_fonts() -> Vec<InstalledFont> {
             let Ok(names) = family.GetFamilyNames() else { continue };
             let english = find(&names, w!("en-us")).unwrap_or(0);
             let shown = user_locale.and_then(|l| find(&names, l)).unwrap_or(english);
+            let mono = family
+                .GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL)
+                .and_then(|f| f.cast::<IDWriteFont1>())
+                .is_ok_and(|f| f.IsMonospacedFont().as_bool());
             if let (Some(family), Some(display)) = (name_at(&names, english), name_at(&names, shown)) {
-                out.push(InstalledFont { family, display });
+                out.push(InstalledFont { family, display, mono });
             }
         }
     }
@@ -191,7 +236,27 @@ mod tests {
 
     #[test]
     fn apply_script_passes_json() {
-        assert_eq!(apply_script(Some("微软雅黑")), "window.__pontoonSetFont && window.__pontoonSetFont(\"微软雅黑\");");
-        assert_eq!(apply_script(None), "window.__pontoonSetFont && window.__pontoonSetFont(null);");
+        let fonts = Fonts { ui: Some("微软雅黑".into()), chat: None, code: Some("Consolas".into()) };
+        assert_eq!(
+            apply_script(&fonts),
+            "window.__pontoonSetFont && window.__pontoonSetFont({\"ui\":\"微软雅黑\",\"chat\":null,\"code\":\"Consolas\"});"
+        );
+    }
+
+    #[test]
+    fn every_font_is_checked() {
+        assert!(Fonts::default().is_valid());
+        assert!(!Fonts { code: Some("x\"}".into()), ..Fonts::default() }.is_valid());
+        assert!(!Fonts { chat: Some(" a".into()), ..Fonts::default() }.is_valid());
+    }
+
+    #[test]
+    fn version_0_2_setting_becomes_the_interface_font() {
+        let old: Settings = serde_json::from_str(r#"{"fontFamily":"KaiTi"}"#).unwrap();
+        assert_eq!(old.fonts(), Fonts { ui: Some("KaiTi".into()), ..Fonts::default() });
+        let new: Settings = serde_json::from_str(r#"{"fonts":{"ui":null,"chat":"SimSun","code":"Consolas"}}"#).unwrap();
+        assert_eq!(new.fonts(), Fonts { ui: None, chat: Some("SimSun".into()), code: Some("Consolas".into()) });
+        let saved = serde_json::to_string(&Settings { fonts: Some(Fonts::default()), legacy_font_family: Some("x".into()) }).unwrap();
+        assert!(!saved.contains("fontFamily"), "{saved}");
     }
 }

@@ -142,8 +142,10 @@ pub fn font_set(app: AppHandle, fonts: Fonts) -> Result<(), String> {
     Ok(())
 }
 
+/// Async so the font scan (which opens every font file to check whether it
+/// is monospace) runs off the main thread instead of freezing the windows.
 #[tauri::command]
-pub fn font_list() -> Vec<InstalledFont> {
+pub async fn font_list() -> Vec<InstalledFont> {
     let mut fonts = system_fonts();
     fonts.retain(|f| is_valid_font_family(&f.family));
     fonts.sort_by(|a, b| a.display.to_lowercase().cmp(&b.display.to_lowercase()));

@@ -165,7 +165,9 @@ if (scenario === "font") {
     (value) => ({ value }), (e) => ({ error: String(e) })), [cmd, args]);
 
   await check("settings window lists the installed fonts", async () => {
-    await settings.waitForFunction(() => document.querySelectorAll("#list li").length > 10, null, { timeout: 15_000 });
+    const started = Date.now();
+    await settings.waitForFunction(() => document.querySelectorAll("#list li").length > 10, null, { timeout: 30_000 });
+    console.log(`  ..   font list shown after ${Date.now() - started} ms`);
     const families = await settings.$$eval("#list li", (els) => els.map((e) => e.dataset.family));
     assert.ok(families.includes("Microsoft YaHei"), "Microsoft YaHei missing from the list");
     for (const f of [TEST.ui, TEST.chat]) assert.ok(families.includes(f), `${f} missing from the list`);

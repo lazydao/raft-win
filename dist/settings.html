@@ -19,9 +19,16 @@
   #list { flex: 1; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; margin: 0; padding: 4px; list-style: none; }
   #list li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
   #list li:hover { background: var(--hover); }
+  #list li.loading { color: var(--muted); cursor: default; background: none; }
   #list li[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); }
   #list li small { color: inherit; opacity: 0.6; font-family: "Segoe UI", system-ui, sans-serif; white-space: nowrap; }
-  #preview { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 16px; line-height: 1.5; min-height: 52px; }
+  #preview { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 16px; line-height: 1.5; min-height: 52px; white-space: pre-wrap; }
+  [role="tablist"] { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  [role="tab"] { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; text-align: left; border-color: var(--line); }
+  [role="tab"][aria-selected="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  [role="tab"] small { color: var(--muted); font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  label.mono { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+  label.mono[hidden] { display: none; }
   .actions { display: flex; align-items: center; gap: 8px; }
   .actions span { flex: 1; color: var(--muted); }
   button { font: inherit; padding: 8px 18px; border-radius: 8px; border: 1px solid var(--accent); cursor: pointer; background: transparent; color: var(--fg); }
@@ -30,11 +37,17 @@
 </head>
 <body>
 <main>
-  <h1>全局字体</h1>
-  <p>选一个字体，Raft 里的文字都会换成它。代码保持等宽字体。</p>
+  <h1>字体设置</h1>
+  <div role="tablist" aria-label="设置哪部分的字体">
+    <button type="button" role="tab" id="tab-ui" data-part="ui">界面字体<small></small></button>
+    <button type="button" role="tab" id="tab-chat" data-part="chat">对话字体<small></small></button>
+    <button type="button" role="tab" id="tab-code" data-part="code">代码字体<small></small></button>
+  </div>
+  <p id="hint"></p>
   <input id="search" type="search" placeholder="搜索字体" aria-label="搜索字体" autocomplete="off">
-  <ul id="list" role="listbox" aria-label="已安装的字体"></ul>
-  <div id="preview">今天下午三点开会，记得带上周报。The quick brown fox jumps over the lazy dog. 0123456789</div>
+  <label class="mono" hidden><input id="mono-only" type="checkbox" checked> 只显示等宽字体</label>
+  <ul id="list" role="listbox" aria-label="已安装的字体"><li class="loading" aria-disabled="true">正在读取已安装的字体…</li></ul>
+  <div id="preview"></div>
   <div class="actions">
     <span id="status" role="status"></span>
     <button id="apply" class="primary" type="button">应用</button>
@@ -47,26 +60,59 @@
   var list = document.getElementById("list");
   var preview = document.getElementById("preview");
   var statusEl = document.getElementById("status");
+  var monoOnly = document.getElementById("mono-only");
+  var PARTS = {
+    ui: { none: "Raft 默认字体", hint: "侧栏、标题、按钮等界面上的文字。",
+      sample: "频道  私信  任务  设置\nThe quick brown fox jumps over the lazy dog." },
+    chat: { none: "跟随界面字体", hint: "聊天消息的正文。不单独设置时跟随界面字体。",
+      sample: "今天下午三点开会，记得带上周报。\nThe quick brown fox jumps over the lazy dog. 0123456789" },
+    code: { none: "Raft 默认等宽字体", hint: "代码块、行内代码和其他等宽文字。",
+      sample: "function greet(name) {\n  return `你好, ${name}!`; // 0O 1lI\n}" },
+  };
   var fonts = [];
-  var selected = null;   // null means Raft's own fonts
-  var saved = null;
+  var part = "ui";
+  var saved = { ui: null, chat: null, code: null };
+  var chosen = { ui: null, chat: null, code: null };
 
-  function quote(family) { return '"' + family + '", sans-serif'; }
+  function quote(family, fallback) { return '"' + family + '", ' + fallback; }
+  function fallback(p) { return p === "code" ? "monospace" : "sans-serif"; }
+  function displayName(family) {
+    var f = fonts.filter(function (x) { return x.family === family; })[0];
+    return f ? f.display : family;
+  }
+  function same(a, b) { return a.ui === b.ui && a.chat === b.chat && a.code === b.code; }
+
+  function renderTabs() {
+    document.querySelectorAll('[role="tab"]').forEach(function (tab) {
+      var p = tab.dataset.part;
+      tab.setAttribute("aria-selected", String(p === part));
+      tab.querySelector("small").textContent = chosen[p] ? displayName(chosen[p]) : PARTS[p].none;
+    });
+    document.getElementById("hint").textContent = PARTS[part].hint;
+    monoOnly.parentElement.hidden = part !== "code";
+  }
+
+  function renderPreview() {
+    var family = chosen[part] || (part === "chat" ? chosen.ui : null);
+    preview.textContent = PARTS[part].sample;
+    preview.style.fontFamily = family ? quote(family, fallback(part)) : (part === "code" ? "monospace" : "");
+  }
 
   function render() {
     var q = document.getElementById("search").value.trim().toLowerCase();
     list.textContent = "";
-    var rows = [{ family: null, display: "Raft 默认字体" }].concat(fonts.filter(function (f) {
+    var rows = [{ family: null, display: PARTS[part].none }].concat(fonts.filter(function (f) {
+      if (part === "code" && monoOnly.checked && !f.mono) return false;
       return !q || f.display.toLowerCase().indexOf(q) >= 0 || f.family.toLowerCase().indexOf(q) >= 0;
     }));
     rows.forEach(function (f) {
       var li = document.createElement("li");
       li.setAttribute("role", "option");
-      li.setAttribute("aria-selected", String(f.family === selected));
+      li.setAttribute("aria-selected", String(f.family === chosen[part]));
       li.dataset.family = f.family || "";
       var name = document.createElement("span");
       name.textContent = f.display;
-      if (f.family) name.style.fontFamily = quote(f.family);
+      if (f.family) name.style.fontFamily = quote(f.family, fallback(part));
       li.appendChild(name);
       if (f.family && f.family !== f.display) {
         var small = document.createElement("small");
@@ -76,31 +122,45 @@
       li.addEventListener("click", function () { select(f.family); });
       list.appendChild(li);
     });
+    renderTabs();
+    renderPreview();
   }
 
   function select(family) {
-    selected = family;
-    preview.style.fontFamily = family ? quote(family) : "";
-    statusEl.textContent = family === saved ? "" : "未应用";
+    chosen[part] = family;
+    statusEl.textContent = same(chosen, saved) ? "" : "未应用";
     render();
   }
 
+  function showPart(p) {
+    part = p;
+    document.getElementById("search").value = "";
+    render();
+    var current = list.querySelector('[aria-selected="true"]');
+    if (current) current.scrollIntoView({ block: "center" });
+  }
+
+  document.querySelectorAll('[role="tab"]').forEach(function (tab) {
+    tab.addEventListener("click", function () { showPart(tab.dataset.part); });
+  });
   document.getElementById("search").addEventListener("input", render);
+  monoOnly.addEventListener("change", render);
   document.getElementById("apply").addEventListener("click", function () {
-    invoke("font_set", { family: selected }).then(function () {
-      saved = selected;
+    var fontsToSave = { ui: chosen.ui, chat: chosen.chat, code: chosen.code };
+    invoke("font_set", { fonts: fontsToSave }).then(function () {
+      saved = fontsToSave;
       statusEl.textContent = "已应用";
     }, function (e) { statusEl.textContent = "应用失败：" + e; });
   });
 
   Promise.all([invoke("font_list", {}), invoke("font_get", {})]).then(function (r) {
     fonts = r[0] || [];
-    saved = r[1] || null;
-    select(saved);
+    var f = r[1] || {};
+    saved = { ui: f.ui || null, chat: f.chat || null, code: f.code || null };
+    chosen = { ui: saved.ui, chat: saved.chat, code: saved.code };
+    showPart("ui");
     statusEl.textContent = "";
-    var current = list.querySelector('[aria-selected="true"]');
-    if (current) current.scrollIntoView({ block: "center" });
-  }, function (e) { statusEl.textContent = "读取字体失败：" + e; });
+  }, function (e) { list.textContent = ""; statusEl.textContent = "读取字体失败：" + e; });
 })();
 </script>
 </body>

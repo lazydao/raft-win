@@ -41,10 +41,12 @@
   </div>
 </main>
 <script>
+(function () {
+  // Wrapped so names like "status" don't collide with window properties.
   var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
   var list = document.getElementById("list");
   var preview = document.getElementById("preview");
-  var status = document.getElementById("status");
+  var statusEl = document.getElementById("status");
   var fonts = [];
   var selected = null;   // null means Raft's own fonts
   var saved = null;
@@ -79,7 +81,7 @@
   function select(family) {
     selected = family;
     preview.style.fontFamily = family ? quote(family) : "";
-    status.textContent = family === saved ? "" : "未应用";
+    statusEl.textContent = family === saved ? "" : "未应用";
     render();
   }
 
@@ -87,18 +89,19 @@
   document.getElementById("apply").addEventListener("click", function () {
     invoke("font_set", { family: selected }).then(function () {
       saved = selected;
-      status.textContent = "已应用";
-    }, function (e) { status.textContent = "应用失败：" + e; });
+      statusEl.textContent = "已应用";
+    }, function (e) { statusEl.textContent = "应用失败：" + e; });
   });
 
   Promise.all([invoke("font_list", {}), invoke("font_get", {})]).then(function (r) {
     fonts = r[0] || [];
     saved = r[1] || null;
     select(saved);
-    status.textContent = "";
+    statusEl.textContent = "";
     var current = list.querySelector('[aria-selected="true"]');
     if (current) current.scrollIntoView({ block: "center" });
-  }, function (e) { status.textContent = "读取字体失败：" + e; });
+  }, function (e) { statusEl.textContent = "读取字体失败：" + e; });
+})();
 </script>
 </body>
 </html>

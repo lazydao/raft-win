@@ -44,6 +44,12 @@ $settingsFile = Join-Path $env:APPDATA "build.pontoon.desktop\settings.json"
 $settingsBackup = Join-Path $env:TEMP "pontoon-e2e-settings-backup.json"
 $hadSettings = Test-Path $settingsFile
 if ($hadSettings) { Copy-Item $settingsFile $settingsBackup -Force }
+# Same for the list of open server windows. Start without it, so only the
+# main window opens and the test's own second window is the only other one.
+$windowsFile = Join-Path $env:APPDATA "build.pontoon.desktop\windows.json"
+$windowsBackup = Join-Path $env:TEMP "pontoon-e2e-windows-backup.json"
+$hadWindows = Test-Path $windowsFile
+if ($hadWindows) { Copy-Item $windowsFile $windowsBackup -Force; Remove-Item $windowsFile -Force }
 function Show-PontoonProcesses {
   Get-CimInstance Win32_Process -Filter "Name='pontoon.exe'" | ForEach-Object {
     Write-Host ("      pid {0} parent {1} session {2}: {3}" -f $_.ProcessId, $_.ParentProcessId, $_.SessionId, $_.CommandLine)
@@ -92,8 +98,11 @@ Write-Host "== Single instance"
 Test-Handoff "second launch hands off to the running instance"
 
 Write-Host "== Server windows"
+# The scenario writes this file first thing; if it dies before that, the window checks are skipped.
+$multiFile = Join-Path $env:TEMP "pontoon-e2e-multiwindow.json"
+Remove-Item $multiFile -Force -ErrorAction SilentlyContinue
 if ((Run-Node "multiwindow") -eq 0) { Pass "multiwindow scenario" } else { Fail "multiwindow scenario" }
-$multi = Get-Content (Join-Path $env:TEMP "pontoon-e2e-multiwindow.json") -Raw | ConvertFrom-Json
+$multi = if (Test-Path $multiFile) { Get-Content $multiFile -Raw | ConvertFrom-Json } else { $null }
 if ($multi) {
   if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E second window | Raft") -ne [System.IntPtr]::Zero) { Pass "second server window is a native top-level window" } else { Fail "no window titled 'E2E second window | Raft'" }
 }
@@ -148,11 +157,14 @@ if (-not $KeepInstalled) {
 }
 
 } finally {
-  Write-Host "== Restore font settings"
+  Write-Host "== Restore font settings and window list"
   Stop-Pontoon
   if ($hadSettings) { Copy-Item $settingsBackup $settingsFile -Force; Remove-Item $settingsBackup -Force }
   elseif (Test-Path $settingsFile) { Remove-Item $settingsFile -Force }
   if ($hadSettings) { Write-Host "settings.json restored" } else { Write-Host "settings.json removed (there was none before)" }
+  if ($hadWindows) { Copy-Item $windowsBackup $windowsFile -Force; Remove-Item $windowsBackup -Force }
+  elseif (Test-Path $windowsFile) { Remove-Item $windowsFile -Force }
+  if ($hadWindows) { Write-Host "windows.json restored" } else { Write-Host "windows.json removed (there was none before)" }
 }
 
 Write-Host ""

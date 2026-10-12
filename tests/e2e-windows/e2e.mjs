@@ -1,5 +1,8 @@
 // Drives Pontoon's real WebView2 over CDP. Called by run-e2e.ps1.
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { chromium } from "playwright";
 
 const scenario = process.argv[2];

@@ -73,21 +73,23 @@ Add-Type -Namespace Pontoon -Name Win32 -MemberDefinition @'
 '@
 if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft") -ne [System.IntPtr]::Zero) { Pass "native window title follows window.setServerTitle" } else { Fail "no top-level window titled 'E2E check | Raft'" }
 
+# A second launch passes its arguments to the running app and exits. It
+# waits for the running app to take them, for at most 10 s, so a slow or
+# stuck running app shows up as a slow exit.
+function Test-Handoff([string]$name, [string[]]$arguments = @()) {
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
+  $p = if ($arguments) { Start-Process -FilePath $exe -ArgumentList $arguments -PassThru } else { Start-Process -FilePath $exe -PassThru }
+  if ($p.WaitForExit(5000)) { Pass "$name (second launch exited after $($timer.ElapsedMilliseconds) ms)" }
+  else { Fail "$name (second launch still running after 5 s)"; Show-PontoonProcesses; $p.WaitForExit(10000) | Out-Null; Write-Host "  second launch exited: $($p.HasExited) after $($timer.ElapsedMilliseconds) ms" }
+}
+
 Write-Host "== Font settings"
 # A second launch with --font-settings opens the settings window in the running app.
-$before = @(Get-Process pontoon).Count
-Start-Process -FilePath $exe -ArgumentList "--font-settings" | Out-Null
-Start-Sleep -Seconds 4
-$after = @(Get-Process pontoon).Count
-if ($after -eq $before) { Pass "--font-settings hands off to the running instance" } else { Fail "--font-settings started a second instance ($before -> $after)"; Show-PontoonProcesses }
+Test-Handoff "--font-settings hands off to the running instance" "--font-settings"
 if ((Run-Node "font") -eq 0) { Pass "font settings scenario" } else { Fail "font settings scenario" }
 
 Write-Host "== Single instance"
-$before = @(Get-Process pontoon).Count
-Start-Process -FilePath $exe | Out-Null
-Start-Sleep -Seconds 4
-$after = @(Get-Process pontoon).Count
-if ($after -eq $before) { Pass "second launch hands off to the running instance" } else { Fail "process count went from $before to $after"; Show-PontoonProcesses }
+Test-Handoff "second launch hands off to the running instance"
 
 Write-Host "== Close to tray"
 # Close the font settings window first, so the main window is the one closed below.

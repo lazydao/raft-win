@@ -104,6 +104,17 @@ pub fn sync_window(window: &WebviewWindow) {
     let _ = window.eval(apply_script(&current(window.app_handle())));
 }
 
+/// Opens the settings window from event handlers (the tray menu, a second
+/// launch). Those run on the main thread, and creating a webview there
+/// deadlocks on Windows (see WebviewWindowBuilder::new), so it is done from
+/// another thread.
+pub fn open_settings_from_handler(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _ = open_settings(&app);
+    });
+}
+
 pub fn open_settings(app: &AppHandle) -> tauri::Result<()> {
     if let Some(w) = app.get_webview_window(SETTINGS_WINDOW) {
         shell::show_window(&w);

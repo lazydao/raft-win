@@ -11,7 +11,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == font::SETTINGS_ARG) {
-                let _ = font::open_settings(app);
+                font::open_settings_from_handler(app);
             } else if let Some(w) = shell::main_window(app) {
                 shell::show_window(&w);
             }

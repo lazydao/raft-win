@@ -70,20 +70,41 @@ Start-Sleep -Seconds 4
 $after = @(Get-Process pontoon).Count
 if ($after -eq $before) { Pass "second launch hands off to the running instance" } else { Fail "process count went from $before to $after" }
 
+Write-Host "== Server windows"
+if ((Run-Node "multiwindow") -eq 0) { Pass "multiwindow scenario" } else { Fail "multiwindow scenario" }
+$multi = Get-Content (Join-Path $env:TEMP "pontoon-e2e-multiwindow.json") -Raw | ConvertFrom-Json
+if ($multi) {
+  if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E second window | Raft") -ne [System.IntPtr]::Zero) { Pass "second server window is a native top-level window" } else { Fail "no window titled 'E2E second window | Raft'" }
+}
+
 Write-Host "== Close to tray"
 # Close the font settings window first, so the main window is the one closed below.
 $settingsWindow = [Pontoon.Win32]::FindWindow([NullString]::Value, "字体设置 · Pontoon")
 if ($settingsWindow -ne [System.IntPtr]::Zero) { [Pontoon.Win32]::PostMessage($settingsWindow, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero) | Out-Null; Start-Sleep -Seconds 1 }
-$main = Get-Process pontoon | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-if ($main) { $main.CloseMainWindow() | Out-Null }
+# Find the main window by title: with a second server window open, the
+# process's MainWindowHandle can be either of them.
+$mainWindow = [Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft")
+if ($mainWindow -ne [System.IntPtr]::Zero) { [Pontoon.Win32]::PostMessage($mainWindow, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero) | Out-Null } else { Fail "main window not found by title" }
 Start-Sleep -Seconds 2
 if (Get-Process -Id $app.Id -ErrorAction SilentlyContinue) { Pass "closing the window keeps the app running" } else { Fail "app exited when the window was closed" }
+# Quitting (here: ending the process) keeps the list of open server windows.
 Stop-Pontoon
 
 Write-Host "== Relaunch keeps the sign-in and the font"
 $app = Start-Pontoon @{} "--font-settings"
 if (Wait-Cdp) {
   if ((Run-Node "relaunch") -eq 0) { Pass "relaunch scenario" } else { Fail "relaunch scenario" }
+  if ((Run-Node "restore") -eq 0) { Pass "server windows reopen after a restart" } else { Fail "restore scenario" }
+  if ($multi) {
+    # Closing a second server window closes it for real and forgets it.
+    $second = [Pontoon.Win32]::FindWindow([NullString]::Value, "E2E second window | Raft")
+    if ($second -ne [System.IntPtr]::Zero) { [Pontoon.Win32]::PostMessage($second, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero) | Out-Null } else { Fail "second window not found after restart" }
+    Start-Sleep -Seconds 2
+    if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E second window | Raft") -eq [System.IntPtr]::Zero) { Pass "second window closes" } else { Fail "second window still open after close" }
+    if (Get-Process pontoon -ErrorAction SilentlyContinue) { Pass "closing a second window keeps the app running" } else { Fail "app exited when a second window was closed" }
+    $saved = Get-Content (Join-Path $env:APPDATA "build.pontoon.desktop\windows.json") -Raw -ErrorAction SilentlyContinue
+    if ($saved -and -not $saved.Contains($multi.id)) { Pass "a closed window is not reopened at start" } else { Fail "windows.json still lists the closed window: $saved" }
+  }
 } else { Fail "no WebView2 debugging endpoint (relaunch)" }
 Stop-Pontoon
 

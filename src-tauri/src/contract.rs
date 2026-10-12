@@ -42,7 +42,8 @@ fn random_nonce() -> String {
 
 /// Script injected at document start on app.raft.build. It exposes the runtime
 /// environment the web client validates against its production preset and the
-/// optional native-extension marker (frozen, non-writable, non-configurable).
+/// optional native-extension marker (frozen, non-writable, non-configurable):
+/// `window.openServer` (server windows) and `window.setServerTitle`.
 pub fn environment_init_script() -> String {
     format!(
         r#"(function () {{
@@ -57,7 +58,7 @@ pub fn environment_init_script() -> String {
   }});
   Object.defineProperty(window, "__RAFT_DESKTOP_ENVIRONMENT__", {{ value: env, writable: false, configurable: false }});
   Object.defineProperty(window, "__RAFT_DESKTOP_NATIVE_EXTENSIONS__", {{
-    value: Object.freeze({{ "window.setServerTitle": 1 }}),
+    value: Object.freeze({{ "window.openServer": 1, "window.setServerTitle": 1 }}),
     writable: false,
     configurable: false
   }});
@@ -125,7 +126,7 @@ fn current_doc(window: &WebviewWindow) -> Option<DocumentState> {
     windows.get(window.label()).cloned()
 }
 
-fn is_canonical_uuid(s: &str) -> bool {
+pub fn is_canonical_uuid(s: &str) -> bool {
     let parts: Vec<&str> = s.split('-').collect();
     let lens = [8, 4, 4, 4, 12];
     parts.len() == 5
@@ -227,7 +228,7 @@ pub fn window_focus(window: WebviewWindow) -> Value {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BindServerParams {
-    server_id: String,
+    pub server_id: String,
     document_generation: u64,
     document_nonce: String,
 }
@@ -252,8 +253,47 @@ pub fn window_bind_server(window: WebviewWindow, params: BindServerParams) -> Va
         if let Some(doc) = windows.get_mut(window.label()) {
             doc.server_id = Some(params.server_id.clone());
         }
+        drop(windows);
+        crate::server_window::set_home(window.app_handle(), window.label(), &params.server_id);
     }
     response
+}
+
+/// Checks a `window.openServer` request; `None` means it may go ahead.
+/// It takes the same params as `window.bindServer`.
+pub fn open_check(params: &BindServerParams, doc: Option<&DocumentState>) -> Option<Value> {
+    const M: &str = "window.openServer";
+    if !is_canonical_uuid(&params.server_id) {
+        return Some(err(M, "invalid_server_id", "Server ID is not canonical", false));
+    }
+    if !doc_matches(doc, params.document_generation, &params.document_nonce) {
+        return Some(err(M, "stale_document", "Document identity is stale", true));
+    }
+    None
+}
+
+pub fn open_ok(server_id: &str, focused_existing: bool) -> Value {
+    let disposition = if focused_existing { "focusedExisting" } else { "opened" };
+    ok("window.openServer", json!({ "serverId": server_id, "disposition": disposition }))
+}
+
+/// Optional native extension: show `serverId` in its own window, focusing the
+/// window that already shows it if there is one. Async, because creating a
+/// window from a synchronous command deadlocks on Windows.
+#[tauri::command]
+pub async fn window_open_server(window: WebviewWindow, params: BindServerParams) -> Value {
+    if let Some(error) = open_check(&params, current_doc(&window).as_ref()) {
+        return error;
+    }
+    let app = window.app_handle();
+    if let Some(existing) = crate::server_window::find_bound(app, &params.server_id) {
+        crate::shell::show_window(&existing);
+        return open_ok(&params.server_id, true);
+    }
+    match crate::server_window::open(app, &params.server_id, true) {
+        Ok(_) => open_ok(&params.server_id, false),
+        Err(_) => err("window.openServer", "open_failed", "Could not open a window", true),
+    }
 }
 
 #[derive(Deserialize)]
@@ -280,9 +320,12 @@ pub fn window_set_server_title(window: WebviewWindow, params: SetTitleParams) ->
     let response = title_envelope(&params, current_doc(&window).as_ref());
     if response["status"] == "ok" {
         let _ = window.set_title(&params.title);
-        if let Some(tray) = window.app_handle().tray_by_id(crate::shell::TRAY_ID) {
-            let _ = tray.set_tooltip(Some(&params.title));
+        if window.label() == crate::shell::MAIN_WINDOW {
+            if let Some(tray) = window.app_handle().tray_by_id(crate::shell::TRAY_ID) {
+                let _ = tray.set_tooltip(Some(&params.title));
+            }
         }
+        crate::shell::refresh_tray(window.app_handle());
     }
     response
 }
@@ -367,6 +410,10 @@ mod tests {
             bind_envelope(&bad_bind, Some(&d)),
             title_envelope(&title, Some(&d)),
             title_envelope(&bad_title, Some(&d)),
+            open_ok("123e4567-e89b-12d3-a456-426614174000", false),
+            open_ok("123e4567-e89b-12d3-a456-426614174000", true),
+            open_check(&bad_bind, Some(&d)).unwrap(),
+            open_check(&bind, None).unwrap(),
             ok("window.focus", json!({ "focused": true })),
             ok("recovery.retry", json!({})),
             ok("recovery.quit", json!({})),
@@ -382,11 +429,26 @@ mod tests {
     }
 
     #[test]
+    fn open_server_checks_identity() {
+        let d = doc();
+        let p = |id: &str, nonce: &str| -> BindServerParams {
+            serde_json::from_value(json!({ "serverId": id, "documentGeneration": 7, "documentNonce": nonce })).unwrap()
+        };
+        assert!(open_check(&p("123e4567-e89b-12d3-a456-426614174000", "6edbdb72a0024b13"), Some(&d)).is_none());
+        let stale = open_check(&p("123e4567-e89b-12d3-a456-426614174000", "other"), Some(&d)).unwrap();
+        assert_eq!(stale["error"]["code"], "stale_document");
+        let bad = open_check(&p("../settings", "6edbdb72a0024b13"), Some(&d)).unwrap();
+        assert_eq!(bad["error"]["code"], "invalid_server_id");
+        assert_eq!(open_ok("123e4567-e89b-12d3-a456-426614174000", true)["result"]["disposition"], "focusedExisting");
+    }
+
+    #[test]
     fn init_script_is_valid_shape() {
         let s = environment_init_script();
         assert!(s.contains(r#"environmentId: "production""#));
         assert!(s.contains(r#"frontendOrigin: "https://app.raft.build""#));
         assert!(s.contains("generation: 1,"));
+        assert!(s.contains(r#""window.openServer": 1"#));
     }
 
     #[test]

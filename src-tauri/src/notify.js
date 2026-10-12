@@ -73,6 +73,8 @@
       invoke("shell_notify", {
         title: isDm ? sender : sender + " 提到了你",
         body: body || "新消息",
+        // Lets the native side drop the same message arriving in another window.
+        id: msg.id,
       });
     });
   }

@@ -1,5 +1,6 @@
 //! Window, tray, navigation policy and notifications.
 
+use std::collections::VecDeque;
 use std::io::Write as _;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -14,6 +15,7 @@ use tauri_plugin_opener::OpenerExt as _;
 
 use crate::contract::{self, FRONTEND_ORIGIN};
 use crate::font;
+use crate::server_window;
 
 pub const MAIN_WINDOW: &str = "server-main";
 pub const TRAY_ID: &str = "main-tray";
@@ -146,19 +148,31 @@ pub fn load_remote(app: AppHandle, window: WebviewWindow) {
             Err(_) => false,
         };
         let target = if reachable {
-            Url::parse(&format!("{FRONTEND_ORIGIN}/")).unwrap()
+            start_url(server_window::home(&app, window.label()).as_deref())
         } else {
             local_url("recovery.html")
         };
         let _ = window.navigate(target);
-        let _ = app;
     });
 }
 
-pub fn create_main_window(app: &AppHandle, start_hidden: bool) -> tauri::Result<WebviewWindow> {
+/// Where a window loads Raft: its own server when it has one (the web client
+/// reads `raftDesktopServerId` and opens that server's last page), otherwise
+/// the web client's own choice.
+fn start_url(server_id: Option<&str>) -> Url {
+    let mut url = Url::parse(&format!("{FRONTEND_ORIGIN}/")).unwrap();
+    if let Some(id) = server_id {
+        url.query_pairs_mut().append_pair("raftDesktopServerId", id);
+    }
+    url
+}
+
+/// Builds a server window (`server-*`): the bundled loading page first, then
+/// app.raft.build once it is reachable.
+pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> tauri::Result<WebviewWindow> {
     let nav_app = app.clone();
     let popup_app = app.clone();
-    let window = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title("Raft")
         .inner_size(1280.0, 820.0)
         .min_inner_size(420.0, 560.0)
@@ -196,28 +210,69 @@ pub fn create_main_window(app: &AppHandle, start_hidden: bool) -> tauri::Result<
         })
         .build()?;
 
-    if !start_hidden {
+    if visible {
         show_window(&window);
     }
     load_remote(app.clone(), window.clone());
     Ok(window)
 }
 
-pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "打开 Raft", true, None::<&str>)?;
-    let reload = MenuItem::with_id(app, "reload", "重新加载", true, None::<&str>)?;
-    let fonts = MenuItem::with_id(app, "fonts", "字体设置…", true, None::<&str>)?;
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-    let autostart = CheckMenuItem::with_id(app, "autostart", "开机时启动", true, autostart_enabled, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&show, &reload, &fonts, &autostart, &separator, &quit])?;
+/// How a window is named in the tray menu: its server title without the
+/// trailing " | Raft", with `&` escaped so Windows does not read it as an
+/// access key.
+fn tray_window_name(title: &str) -> String {
+    let name = title.strip_suffix(" | Raft").unwrap_or(title).trim();
+    let name = if name.is_empty() { "Raft" } else { name };
+    name.replace('&', "&&")
+}
 
-    let autostart_item = autostart.clone();
+const WINDOW_ITEM_PREFIX: &str = "window:";
+
+fn tray_menu(app: &AppHandle, closing: Option<&str>) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+    let mut windows = server_window::all(app);
+    windows.retain(|w| Some(w.label()) != closing);
+    if windows.len() > 1 {
+        // One entry per server window, so any of them can be brought back.
+        for w in &windows {
+            let name = tray_window_name(&w.title().unwrap_or_default());
+            let id = format!("{WINDOW_ITEM_PREFIX}{}", w.label());
+            menu.append(&MenuItem::with_id(app, id, name, true, None::<&str>)?)?;
+        }
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    } else {
+        menu.append(&MenuItem::with_id(app, "show", "打开 Raft", true, None::<&str>)?)?;
+    }
+    menu.append(&MenuItem::with_id(app, "reload", "重新加载", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "fonts", "字体设置…", true, None::<&str>)?)?;
+    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    menu.append(&CheckMenuItem::with_id(app, "autostart", "开机时启动", true, autostart_enabled, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?)?;
+    Ok(menu)
+}
+
+/// Rebuilds the tray menu after a server window opens or is renamed.
+pub fn refresh_tray(app: &AppHandle) {
+    set_tray_menu(app, None);
+}
+
+/// Rebuilds the tray menu as `label` is destroyed, which may still be listed.
+pub fn refresh_tray_without(app: &AppHandle, label: &str) {
+    set_tray_menu(app, Some(label));
+}
+
+fn set_tray_menu(app: &AppHandle, closing: Option<&str>) {
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), tray_menu(app, closing)) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().expect("bundled icon"))
         .tooltip("Raft")
-        .menu(&menu)
+        .menu(&tray_menu(app, None)?)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "show" => {
@@ -226,7 +281,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
             "reload" => {
-                if let Some(w) = main_window(app) {
+                for w in server_window::all(app) {
                     load_remote(app.clone(), w);
                 }
             }
@@ -237,10 +292,16 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 let launcher = app.autolaunch();
                 let enabled = launcher.is_enabled().unwrap_or(false);
                 let _ = if enabled { launcher.disable() } else { launcher.enable() };
-                let _ = autostart_item.set_checked(launcher.is_enabled().unwrap_or(false));
+                refresh_tray(app);
             }
             "quit" => app.exit(0),
-            _ => {}
+            id => {
+                if let Some(label) = id.strip_prefix(WINDOW_ITEM_PREFIX) {
+                    if let Some(w) = app.get_webview_window(label) {
+                        show_window(&w);
+                    }
+                }
+            }
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
@@ -257,8 +318,30 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Message IDs already notified. Every server window has its own socket, and
+/// some messages (thread replies you follow) reach all of them.
+static NOTIFIED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+
+/// True the first time `id` is seen across all windows.
+fn first_notification(id: &str) -> bool {
+    let mut seen = NOTIFIED.lock().unwrap();
+    if seen.iter().any(|s| s == id) {
+        return false;
+    }
+    if seen.len() >= 500 {
+        seen.pop_front();
+    }
+    seen.push_back(id.chars().take(64).collect());
+    true
+}
+
 #[tauri::command]
-pub fn shell_notify(app: AppHandle, window: WebviewWindow, title: String, body: String) {
+pub fn shell_notify(app: AppHandle, window: WebviewWindow, title: String, body: String, id: Option<String>) {
+    if let Some(id) = id {
+        if !first_notification(&id) {
+            return;
+        }
+    }
     let title: String = title.chars().take(160).collect();
     let body: String = body.chars().take(512).collect();
     let _ = app.notification().builder().title(title).body(body).show();
@@ -281,6 +364,25 @@ mod tests {
         assert!(!is_auth(&u("https://github.com/botiverse/raft-source")));
         assert!(is_local(&u("http://tauri.localhost/recovery.html")));
         assert!(!is_local(&u("https://example.com/")));
+    }
+
+    #[test]
+    fn server_windows_start_on_their_server() {
+        assert_eq!(start_url(None).as_str(), "https://app.raft.build/");
+        assert_eq!(
+            start_url(Some("123e4567-e89b-12d3-a456-426614174000")).as_str(),
+            "https://app.raft.build/?raftDesktopServerId=123e4567-e89b-12d3-a456-426614174000"
+        );
+        assert_eq!(tray_window_name("general · Acme | Raft"), "general · Acme");
+        assert_eq!(tray_window_name("R&D | Raft"), "R&&D");
+        assert_eq!(tray_window_name("Raft"), "Raft");
+    }
+
+    #[test]
+    fn notifications_are_deduplicated_across_windows() {
+        assert!(first_notification("dedupe-test-1"));
+        assert!(!first_notification("dedupe-test-1"));
+        assert!(first_notification("dedupe-test-2"));
     }
 
     #[test]

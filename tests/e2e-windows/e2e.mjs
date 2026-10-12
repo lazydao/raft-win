@@ -225,6 +225,92 @@ if (scenario === "relaunch") {
   });
 }
 
+// Several server windows. Written by "multiwindow", read by "restore".
+const multiFile = join(tmpdir(), "pontoon-e2e-multiwindow.json");
+const SECOND_TITLE = "E2E second window | Raft";
+const appPages = () => browser.contexts().flatMap((c) => c.pages()).filter((p) => p.url().startsWith("https://app.raft.build/"));
+const invokeIn = (page, command, params) => page.evaluate(
+  ([command, params]) => window.__TAURI_INTERNALS__.invoke(command, params === null ? {} : { params }),
+  [command, params],
+);
+const identity = async (page) => {
+  await page.waitForFunction(() => !!window.__RAFT_DESKTOP_DOCUMENT__, null, { timeout: 30_000 });
+  return page.evaluate(() => window.__RAFT_DESKTOP_DOCUMENT__);
+};
+const setTitle = async (page, title) => {
+  const d = await identity(page);
+  const r = await invokeIn(page, "window_set_server_title", { documentGeneration: d.generation, documentNonce: d.nonce, title });
+  assert.equal(r.status, "ok", JSON.stringify(r));
+};
+
+if (scenario === "multiwindow") {
+  const main = await waitForPage((u) => u.startsWith("https://app.raft.build/"));
+  const servers = await main.evaluate(() => fetch("https://api.raft.build/api/servers", {
+    headers: { Authorization: "Bearer " + localStorage.getItem("slock_access_token") },
+  }).then((r) => r.json()));
+  const currentSlug = new URL(main.url()).pathname.match(/^\/s\/([^/]+)/)?.[1];
+  const target = Array.isArray(servers) ? servers.find((s) => s.slug !== currentSlug) : null;
+  writeFileSync(multiFile, JSON.stringify(target ? { id: target.id, slug: target.slug } : null));
+
+  await check("shell advertises window.openServer", async () => {
+    assert.equal(await main.evaluate(() => window.__RAFT_DESKTOP_NATIVE_EXTENSIONS__["window.openServer"]), 1);
+  });
+  if (!target) {
+    console.log("  ..   only one server on this account; skipping the second-window checks");
+  } else {
+    let second;
+    await check(`window.openServer opens ${target.slug} in a new window`, async () => {
+      const d = await identity(main);
+      const r = await invokeIn(main, "window_open_server", { serverId: target.id, documentGeneration: d.generation, documentNonce: d.nonce });
+      assert.equal(r.status, "ok", JSON.stringify(r));
+      assert.equal(r.result.disposition, "opened");
+      second = await waitForPage((u) => u.startsWith(`https://app.raft.build/s/${target.slug}`), 90_000);
+    });
+    await check("the new window completes the desktop handshake, signed in", async () => {
+      await identity(second);
+      await second.waitForTimeout(5_000);
+      assert.equal(await second.locator("#raft-desktop-handshake-recovery").count(), 0);
+      assert.ok(await second.evaluate(() => !!localStorage.getItem("slock_access_token")), "second window is signed out");
+    });
+    await check("the first window stays on its own server", async () => {
+      if (currentSlug) assert.ok(new URL(main.url()).pathname.startsWith(`/s/${currentSlug}`), main.url());
+    });
+    await check("opening the same server again focuses the existing window", async () => {
+      const before = appPages().length;
+      const d = await identity(main);
+      const r = await invokeIn(main, "window_open_server", { serverId: target.id, documentGeneration: d.generation, documentNonce: d.nonce });
+      assert.equal(r.status, "ok", JSON.stringify(r));
+      assert.equal(r.result.disposition, "focusedExisting");
+      await main.waitForTimeout(3_000);
+      assert.equal(appPages().length, before);
+    });
+    await check("a bad server ID is rejected", async () => {
+      const d = await identity(main);
+      const r = await invokeIn(main, "window_open_server", { serverId: "../settings", documentGeneration: d.generation, documentNonce: d.nonce });
+      assert.equal(r.status, "error");
+      assert.equal(r.error.code, "invalid_server_id");
+    });
+    // Titles the PowerShell side looks the windows up by.
+    await check("second window title", () => setTitle(second, SECOND_TITLE));
+  }
+  await check("main window title", () => setTitle(main, "E2E check | Raft"));
+}
+
+if (scenario === "restore") {
+  const target = JSON.parse(readFileSync(multiFile, "utf8"));
+  if (!target) {
+    console.log("  ..   only one server on this account; nothing to restore");
+  } else {
+    await check(`the ${target.slug} window comes back after a restart`, async () => {
+      const page = await waitForPage((u) => u.startsWith(`https://app.raft.build/s/${target.slug}`), 90_000);
+      await identity(page);
+      await page.waitForTimeout(3_000);
+      assert.equal(await page.locator("#raft-desktop-handshake-recovery").count(), 0);
+      await setTitle(page, SECOND_TITLE);
+    });
+  }
+}
+
 if (scenario === "offline") {
   const page = await waitForPage((u) => u.endsWith("/recovery.html"), 45_000);
   await check("recovery page shown when Raft is unreachable", async () => {

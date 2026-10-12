@@ -69,7 +69,7 @@ pub fn current(app: &AppHandle) -> Option<String> {
     app.state::<FontState>().0.lock().unwrap().clone()
 }
 
-/// Sends the current choice to the main window's page.
+/// Sends the current choice to a server window's page.
 pub fn sync_window(window: &WebviewWindow) {
     let _ = window.eval(apply_script(current(window.app_handle()).as_deref()));
 }
@@ -108,7 +108,7 @@ pub fn font_set(app: AppHandle, family: Option<String>) -> Result<(), String> {
     let body = serde_json::to_vec_pretty(&Settings { font_family: family.clone() }).unwrap();
     std::fs::write(&path, body).map_err(|e| e.to_string())?;
     *app.state::<FontState>().0.lock().unwrap() = family;
-    if let Some(w) = shell::main_window(&app) {
+    for w in crate::server_window::all(&app) {
         sync_window(&w);
     }
     Ok(())

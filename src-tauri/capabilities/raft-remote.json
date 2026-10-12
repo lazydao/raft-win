@@ -8,6 +8,7 @@
     "allow-desktop-handshake",
     "allow-window-focus",
     "allow-window-bind-server",
+    "allow-window-open-server",
     "allow-window-set-server-title",
     "allow-shell-notify"
   ]

@@ -1,5 +1,6 @@
 mod contract;
 mod font;
+mod server_window;
 mod shell;
 
 use tauri::{Manager, WindowEvent};
@@ -26,10 +27,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(contract::ContractState::default())
         .manage(font::FontState::default())
+        .manage(server_window::ServerWindows::default())
         .invoke_handler(tauri::generate_handler![
             contract::desktop_handshake,
             contract::window_focus,
             contract::window_bind_server,
+            contract::window_open_server,
             contract::window_set_server_title,
             contract::recovery_retry,
             contract::recovery_quit,
@@ -41,23 +44,30 @@ pub fn run() {
         .setup(|app| {
             font::load(app.handle());
             let start_hidden = std::env::args().any(|a| a == shell::HIDDEN_ARG);
-            shell::create_main_window(app.handle(), start_hidden)?;
             shell::create_tray(app.handle())?;
+            server_window::restore(app.handle(), start_hidden)?;
+            shell::refresh_tray(app.handle());
             if std::env::args().any(|a| a == font::SETTINGS_ARG) {
                 font::open_settings(app.handle())?;
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // Closing the window keeps Raft running in the tray so
-            // notifications keep arriving; quit from the tray menu.
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            // Closing the main window keeps Raft running in the tray so
+            // notifications keep arriving; quit from the tray menu. Other
+            // server windows close for real and are not reopened at start.
+            WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == shell::MAIN_WINDOW {
                     api.prevent_close();
                     let _ = window.hide();
+                } else if server_window::is_server_window(window.label()) {
+                    server_window::forget(window.app_handle(), window.label());
                 }
             }
-            let _ = window.app_handle();
+            WindowEvent::Destroyed if server_window::is_server_window(window.label()) => {
+                shell::refresh_tray_without(window.app_handle(), window.label());
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running Pontoon");

@@ -321,9 +321,7 @@ pub fn window_set_server_title(window: WebviewWindow, params: SetTitleParams) ->
     if response["status"] == "ok" {
         let _ = window.set_title(&params.title);
         if window.label() == crate::shell::MAIN_WINDOW {
-            if let Some(tray) = window.app_handle().tray_by_id(crate::shell::TRAY_ID) {
-                let _ = tray.set_tooltip(Some(&params.title));
-            }
+            crate::shell::set_tray_tooltip(window.app_handle(), Some(&params.title));
         }
         crate::shell::refresh_tray(window.app_handle());
     }

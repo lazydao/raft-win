@@ -63,6 +63,10 @@ $p = Start-Process -FilePath $Installer -ArgumentList "/S" -Wait -PassThru
 if ($p.ExitCode -eq 0 -and (Test-Path $exe)) { Pass "silent install to $installDir" } else { Fail "installer exit $($p.ExitCode), exe present: $(Test-Path $exe)"; exit 1 }
 $lnk = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "Pontoon*.lnk" -ErrorAction SilentlyContinue
 if ($lnk) { Pass "Start menu shortcut" } else { Fail "Start menu shortcut missing" }
+# The tray menu shows the version tauri.conf.json sets; the installed exe carries the same one.
+$expectedVersion = (Get-Content (Join-Path $root "src-tauri\tauri.conf.json") -Raw | ConvertFrom-Json).version
+$installedVersion = (Get-Item $exe).VersionInfo.ProductVersion
+if ($installedVersion -eq $expectedVersion) { Pass "installed version is $installedVersion" } else { Fail "installed version is '$installedVersion', expected $expectedVersion" }
 # The installer may start the app; begin from a clean state.
 Stop-Pontoon
 

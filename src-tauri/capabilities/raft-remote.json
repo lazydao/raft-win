@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "raft-remote",
+  "description": "What app.raft.build may call: the public Raft desktop contract and notifications. Nothing else.",
+  "windows": ["server-*"],
+  "remote": { "urls": ["https://app.raft.build/*"] },
+  "permissions": [
+    "allow-desktop-handshake",
+    "allow-window-focus",
+    "allow-window-bind-server",
+    "allow-window-set-server-title",
+    "allow-shell-notify"
+  ]
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-window-set-server-title"
+description = "Enables the window_set_server_title command without any pre-configured scope."
+commands.allow = ["window_set_server_title"]
+
+[[permission]]
+identifier = "deny-window-set-server-title"
+description = "Denies the window_set_server_title command without any pre-configured scope."
+commands.deny = ["window_set_server_title"]

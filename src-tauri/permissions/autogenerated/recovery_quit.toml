@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recovery-quit"
+description = "Enables the recovery_quit command without any pre-configured scope."
+commands.allow = ["recovery_quit"]
+
+[[permission]]
+identifier = "deny-recovery-quit"
+description = "Denies the recovery_quit command without any pre-configured scope."
+commands.deny = ["recovery_quit"]

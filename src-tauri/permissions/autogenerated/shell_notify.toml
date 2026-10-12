@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-shell-notify"
+description = "Enables the shell_notify command without any pre-configured scope."
+commands.allow = ["shell_notify"]
+
+[[permission]]
+identifier = "deny-shell-notify"
+description = "Denies the shell_notify command without any pre-configured scope."
+commands.deny = ["shell_notify"]

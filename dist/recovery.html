@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raft · 无法连接</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff8e1; --fg: #1c1b17; --muted: #6b665a; --accent: #1c1b17; --accent-fg: #fff8e1; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1b17; --fg: #f4efe1; --muted: #a8a293; --accent: #f4efe1; --accent-fg: #1c1b17; } }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif; }
+  main { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 0 16px; text-align: center; }
+  h1 { font-size: 20px; margin: 0; }
+  p { margin: 0; color: var(--muted); max-width: 420px; line-height: 1.5; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 8px; border: 1px solid var(--accent); cursor: pointer; background: transparent; color: var(--fg); }
+  button.primary { background: var(--accent); color: var(--accent-fg); }
+</style>
+</head>
+<body>
+<main role="alert">
+  <h1>无法连接到 Raft</h1>
+  <p>请检查网络连接。网络恢复后点"重试"，或从托盘图标菜单里选"重新加载"。</p>
+  <div class="actions">
+    <button class="primary" id="retry" type="button">重试</button>
+    <button id="quit" type="button">退出</button>
+  </div>
+</main>
+<script>
+  function call(cmd) {
+    var internals = window.__TAURI_INTERNALS__;
+    if (internals && internals.invoke) internals.invoke(cmd, {});
+  }
+  document.getElementById("retry").addEventListener("click", function () {
+    call("recovery_retry");
+    setTimeout(function () { location.replace("index.html"); }, 50);
+  });
+  document.getElementById("quit").addEventListener("click", function () { call("recovery_quit"); });
+  window.addEventListener("online", function () { call("recovery_retry"); });
+</script>
+</body>
+</html>

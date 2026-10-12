@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raft</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff8e1; --fg: #1c1b17; --muted: #6b665a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1b17; --fg: #f4efe1; --muted: #a8a293; } }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif; }
+  main { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+  .spinner { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--muted); border-top-color: transparent;
+    animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <div class="spinner" aria-hidden="true"></div>
+  <p>正在连接 app.raft.build…</p>
+</main>
+</body>
+</html>

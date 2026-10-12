@@ -1,5 +1,8 @@
 // Drives Pontoon's real WebView2 over CDP. Called by run-e2e.ps1.
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { chromium } from "playwright";
 
 const scenario = process.argv[2];
@@ -130,6 +133,70 @@ if (scenario === "online") {
   });
 }
 
+// The font chosen before the test, restored by the relaunch scenario.
+const savedFontFile = join(tmpdir(), "pontoon-e2e-font.json");
+// A font every Chinese Windows install has, and that looks clearly different.
+const TEST_FONTS = ["KaiTi", "SimSun", "FangSong", "Consolas"];
+const bodyFont = (page) => page.evaluate(() => getComputedStyle(document.body).fontFamily);
+
+if (scenario === "font") {
+  const settings = await waitForPage((u) => u.endsWith("/settings.html"), 30_000);
+  const main = await waitForPage((u) => u.startsWith("https://app.raft.build/"));
+  await settings.waitForLoadState("load");
+  const invoke = (page, cmd, args) => page.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a).then(
+    (value) => ({ value }), (e) => ({ error: String(e) })), [cmd, args]);
+  let family;
+
+  await check("settings window lists the installed fonts", async () => {
+    await settings.waitForFunction(() => document.querySelectorAll("#list li").length > 10, null, { timeout: 15_000 });
+    const families = await settings.$$eval("#list li", (els) => els.map((e) => e.dataset.family));
+    assert.ok(families.includes("Microsoft YaHei"), "Microsoft YaHei missing from the list");
+    family = TEST_FONTS.find((f) => families.includes(f));
+    assert.ok(family, "none of the test fonts is installed");
+  });
+  await check("current choice is readable", async () => {
+    const r = await invoke(settings, "font_get", {});
+    assert.ok(!r.error, r.error);
+    writeFileSync(savedFontFile, JSON.stringify({ family: r.value ?? null }));
+  });
+  await check(`choosing ${family} applies it to Raft right away`, async () => {
+    await settings.locator(`#list li[data-family="${family}"]`).click();
+    await settings.getByRole("button", { name: "应用" }).click();
+    await settings.locator("#status", { hasText: "已应用" }).waitFor({ timeout: 10_000 });
+    await main.waitForFunction((f) => getComputedStyle(document.body).fontFamily.includes(f), family, { timeout: 10_000 });
+    const inApp = await main.evaluate(() => {
+      const el = [...document.querySelectorAll("#root *")].find((e) => e.childElementCount === 0 && e.textContent.trim() && !e.closest("code, pre, .font-mono"));
+      return el ? getComputedStyle(el).fontFamily : "";
+    });
+    assert.ok(inApp.includes(family), `Raft text uses ${inApp}`);
+  });
+  await check("code keeps a monospace font", async () => {
+    const f = await main.evaluate(() => {
+      const c = document.createElement("code");
+      c.textContent = "x";
+      document.getElementById("root").appendChild(c);
+      const v = getComputedStyle(c).fontFamily;
+      c.remove();
+      return v;
+    });
+    assert.ok(!f.includes(family), f);
+  });
+  await check("font survives a reload", async () => {
+    await main.reload();
+    await main.waitForLoadState("domcontentloaded");
+    assert.ok((await bodyFont(main)).includes(family), await bodyFont(main));
+  });
+  await check("app.raft.build cannot change the font", async () => {
+    const r = await invoke(main, "font_set", { family: "Arial" });
+    assert.ok(r.error, "font_set from the remote page should be denied");
+  });
+  await check("unsafe font names are rejected", async () => {
+    const r = await invoke(settings, "font_set", { family: 'x"} body{display:none' });
+    assert.ok(r.error, "an unsafe name was accepted");
+    assert.ok((await bodyFont(main)).includes(family));
+  });
+}
+
 if (scenario === "relaunch") {
   const page = await waitForPage((u) => u.startsWith("https://app.raft.build/"));
   await page.waitForLoadState("load");
@@ -140,6 +207,21 @@ if (scenario === "relaunch") {
     await page.waitForFunction(() => !!window.__RAFT_DESKTOP_DOCUMENT__, null, { timeout: 15_000 });
     await page.waitForTimeout(3_000);
     assert.equal(await page.locator("#raft-desktop-handshake-recovery").count(), 0);
+  });
+  // Started with --font-settings: check the font from the font scenario
+  // survived the restart, then put back what was chosen before the test.
+  const settings = await waitForPage((u) => u.endsWith("/settings.html"), 30_000);
+  await settings.waitForLoadState("load");
+  const saved = JSON.parse(readFileSync(savedFontFile, "utf8")).family;
+  const tested = await settings.evaluate(() => window.__TAURI_INTERNALS__.invoke("font_get", {}));
+  await check("font choice survives an app restart", async () => {
+    assert.ok(TEST_FONTS.includes(tested), `saved font is ${tested}`);
+    assert.ok((await bodyFont(page)).includes(tested), await bodyFont(page));
+  });
+  await check("restoring the previous font", async () => {
+    await settings.evaluate((f) => window.__TAURI_INTERNALS__.invoke("font_set", { family: f }), saved);
+    if (saved) await page.waitForFunction((f) => getComputedStyle(document.body).fontFamily.includes(f), saved, { timeout: 10_000 });
+    else await page.waitForFunction(() => !document.getElementById("pontoon-font"), null, { timeout: 10_000 });
   });
 }
 

@@ -1,4 +1,5 @@
 mod contract;
+mod font;
 mod shell;
 
 use tauri::{Manager, WindowEvent};
@@ -8,8 +9,10 @@ use tauri_plugin_window_state::StateFlags;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = shell::main_window(app) {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == font::SETTINGS_ARG) {
+                let _ = font::open_settings(app);
+            } else if let Some(w) = shell::main_window(app) {
                 shell::show_window(&w);
             }
         }))
@@ -22,6 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(contract::ContractState::default())
+        .manage(font::FontState::default())
         .invoke_handler(tauri::generate_handler![
             contract::desktop_handshake,
             contract::window_focus,
@@ -30,11 +34,18 @@ pub fn run() {
             contract::recovery_retry,
             contract::recovery_quit,
             shell::shell_notify,
+            font::font_get,
+            font::font_set,
+            font::font_list,
         ])
         .setup(|app| {
+            font::load(app.handle());
             let start_hidden = std::env::args().any(|a| a == shell::HIDDEN_ARG);
             shell::create_main_window(app.handle(), start_hidden)?;
             shell::create_tray(app.handle())?;
+            if std::env::args().any(|a| a == font::SETTINGS_ARG) {
+                font::open_settings(app.handle())?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

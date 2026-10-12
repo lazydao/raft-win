@@ -13,6 +13,7 @@ use tauri_plugin_notification::NotificationExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 
 use crate::contract::{self, FRONTEND_ORIGIN};
+use crate::font;
 
 pub const MAIN_WINDOW: &str = "server-main";
 pub const TRAY_ID: &str = "main-tray";
@@ -165,6 +166,7 @@ pub fn create_main_window(app: &AppHandle, start_hidden: bool) -> tauri::Result<
         .zoom_hotkeys_enabled(true)
         .initialization_script(contract::environment_init_script())
         .initialization_script(include_str!("notify.js"))
+        .initialization_script(include_str!("font.js"))
         .on_navigation(move |url| {
             if allow_navigation(url) {
                 log_navigation(&nav_app, "in-app", url);
@@ -189,6 +191,7 @@ pub fn create_main_window(app: &AppHandle, start_hidden: bool) -> tauri::Result<
         .on_page_load(|window, payload| {
             if payload.event() == PageLoadEvent::Finished && is_raft(payload.url()) {
                 contract::issue_document_identity(&window);
+                font::sync_window(&window);
             }
         })
         .build()?;
@@ -203,11 +206,12 @@ pub fn create_main_window(app: &AppHandle, start_hidden: bool) -> tauri::Result<
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "打开 Raft", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, "reload", "重新加载", true, None::<&str>)?;
+    let fonts = MenuItem::with_id(app, "fonts", "字体设置…", true, None::<&str>)?;
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart = CheckMenuItem::with_id(app, "autostart", "开机时启动", true, autostart_enabled, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&show, &reload, &autostart, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &reload, &fonts, &autostart, &separator, &quit])?;
 
     let autostart_item = autostart.clone();
     TrayIconBuilder::with_id(TRAY_ID)
@@ -225,6 +229,9 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 if let Some(w) = main_window(app) {
                     load_remote(app.clone(), w);
                 }
+            }
+            "fonts" => {
+                let _ = font::open_settings(app);
             }
             "autostart" => {
                 let launcher = app.autolaunch();

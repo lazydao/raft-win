@@ -8,6 +8,9 @@ fn main() {
             "recovery_retry",
             "recovery_quit",
             "shell_notify",
+            "font_get",
+            "font_set",
+            "font_list",
         ]),
     ))
     .expect("failed to run tauri-build");

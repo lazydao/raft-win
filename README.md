@@ -8,7 +8,7 @@ Pontoon 是 [app.raft.build](https://app.raft.build) 的 Windows 桌面客户端
 - **保持登录**：登录状态保存在本机，下次打开不用重新登录。
 - **外部链接**：聊天里的链接用系统默认浏览器打开。Google、GitHub、Apple 登录页留在窗口里完成。
 - **断网恢复**：连不上 Raft 时显示重试页面，网络恢复后会自动重连。
-- **全局字体**：托盘菜单"字体设置…"里可以从本机已安装的字体中选一个，Raft 里的文字都会换成它，代码保持等宽字体。也可以运行 `pontoon.exe --font-settings` 打开这个窗口。
+- **字体设置**：托盘菜单"字体设置…"里可以分别选界面字体（侧栏、标题、按钮）、对话字体（聊天消息正文）和代码字体，都从本机已安装的字体里选；代码字体默认只列等宽字体，对话字体不单独设置时跟随界面字体。也可以运行 `pontoon.exe --font-settings` 打开这个窗口。
 - **其他**：只允许运行一个实例；记住窗口大小和位置；Ctrl + 加号/减号可以缩放。
 
 图标是一只浮在水面上的海獭：一群海獭手拉手漂在水上，英文就叫 a raft of otters。
@@ -59,7 +59,7 @@ RAFT_SOURCE=../raft-source npm run test:web          # 用官方网页代码做�
 | `src-tauri/src/contract.rs` | 官方桌面协议的原生实现：注入运行环境、为每次页面加载签发文档身份，以及握手、绑定 server、设置标题、恢复页这些命令 |
 | `src-tauri/src/notify.js` | 注入到网页里，监听 Socket.IO 的 `message:new`；遇到私信或 @你 的消息时请求原生通知 |
 | `src-tauri/src/shell.rs` | 窗口、托盘、导航策略（哪些链接在窗口内打开，哪些交给浏览器）、联网检查、通知 |
-| `src-tauri/src/font.rs`、`font.js` | 全局字体：读取系统字体列表、保存选择，并把它注入网页 |
+| `src-tauri/src/font.rs`、`font.js` | 字体设置：读取系统字体列表（含是否等宽）、保存界面/对话/代码三种字体，并把它们注入网页 |
 | `src-tauri/capabilities/` | 权限范围：app.raft.build 只能调用上面这些命令，字体设置命令只有本地的设置窗口能调用 |
 | `dist/` | 本地的加载页、断网恢复页和字体设置页 |
 

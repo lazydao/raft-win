@@ -228,8 +228,43 @@ fn tray_window_name(title: &str) -> String {
 
 const WINDOW_ITEM_PREFIX: &str = "window:";
 
+/// "Pontoon 0.4.1": the installed version, shown in the tray menu and tooltip.
+fn version_label(version: &str) -> String {
+    format!("Pontoon {version}")
+}
+
+/// The tray tooltip: the main window's server title, if it has one, over the
+/// version. Windows cuts tray tooltips at 127 characters, so a long title is
+/// shortened first and the version line always fits.
+fn tooltip_text(version: &str, title: Option<&str>) -> String {
+    let version = version_label(version);
+    match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => {
+            let room = 127 - version.chars().count() - 1;
+            let t: String = if t.chars().count() > room {
+                t.chars().take(room - 1).chain(std::iter::once('…')).collect()
+            } else {
+                t.to_string()
+            };
+            format!("{t}\n{version}")
+        }
+        None => version,
+    }
+}
+
+/// Updates the tray tooltip; `title` is the main window's server title.
+pub fn set_tray_tooltip(app: &AppHandle, title: Option<&str>) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(tooltip_text(&app.package_info().version.to_string(), title)));
+    }
+}
+
 fn tray_menu(app: &AppHandle, closing: Option<&str>) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::new(app)?;
+    // Not clickable; it only tells you which version is installed.
+    let version = version_label(&app.package_info().version.to_string());
+    menu.append(&MenuItem::with_id(app, "version", version, false, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
     let mut windows = server_window::all(app);
     windows.retain(|w| Some(w.label()) != closing);
     if windows.len() > 1 {
@@ -271,7 +306,7 @@ fn set_tray_menu(app: &AppHandle, closing: Option<&str>) {
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().expect("bundled icon"))
-        .tooltip("Raft")
+        .tooltip(tooltip_text(&app.package_info().version.to_string(), None))
         .menu(&tray_menu(app, None)?)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
@@ -376,6 +411,17 @@ mod tests {
         assert_eq!(tray_window_name("general · Acme | Raft"), "general · Acme");
         assert_eq!(tray_window_name("R&D | Raft"), "R&&D");
         assert_eq!(tray_window_name("Raft"), "Raft");
+    }
+
+    #[test]
+    fn version_shows_in_the_tray() {
+        assert_eq!(version_label("0.4.1"), "Pontoon 0.4.1");
+        assert_eq!(tooltip_text("0.4.1", None), "Pontoon 0.4.1");
+        assert_eq!(tooltip_text("0.4.1", Some("  ")), "Pontoon 0.4.1");
+        assert_eq!(tooltip_text("0.4.1", Some("general · Acme | Raft")), "general · Acme | Raft\nPontoon 0.4.1");
+        let long = tooltip_text("0.4.1", Some(&"长".repeat(200)));
+        assert_eq!(long.chars().count(), 127);
+        assert!(long.ends_with("…\nPontoon 0.4.1"));
     }
 
     #[test]

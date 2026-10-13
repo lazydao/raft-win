@@ -63,13 +63,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: pontoon-windows-installer
-          path: dist
+          path: release-files
       - name: Write the release notes
         run: |
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
           installer="Pontoon_${version}_x64-setup.exe"
-          test -f "dist/$installer" || { echo "::error::dist/$installer is missing"; ls dist; exit 1; }
-          (cd dist && sha256sum -c SHA256SUMS.txt)
+          test -f "release-files/$installer" || { echo "::error::release-files/$installer is missing"; ls release-files; exit 1; }
+          (cd release-files && sha256sum -c SHA256SUMS.txt)
           {
             echo "Pontoon $version，Raft（app.raft.build）的非官方 Windows 客户端。"
             echo
@@ -78,7 +78,7 @@ jobs:
             echo "SHA256："
             echo
             echo '```'
-            cat dist/SHA256SUMS.txt
+            cat release-files/SHA256SUMS.txt
             echo '```'
           } > notes.md
           cat notes.md
@@ -90,7 +90,7 @@ jobs:
         run: |
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/SHA256SUMS.txt \
+          gh release create "$GITHUB_REF_NAME" release-files/*.exe release-files/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "Pontoon ${GITHUB_REF_NAME#v}" \
             --notes-file notes.md --generate-notes $prerelease
@@ -98,4 +98,4 @@ jobs:
         if: "!startsWith(github.ref, 'refs/tags/v')"
         run: |
           echo "Would publish Pontoon $VERSION with:"
-          ls -l dist
+          ls -l release-files

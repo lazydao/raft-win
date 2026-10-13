@@ -18,7 +18,7 @@ Pontoon 是 [app.raft.build](https://app.raft.build) 的 Windows 桌面客户端
 
 ## 安装
 
-运行 `Pontoon_<版本>_x64-setup.exe`，安装到当前用户目录，不需要管理员权限。如果系统里没有 WebView2 运行时（Windows 10 的较旧版本可能没有），安装程序会自动下载。
+从 [Releases](https://github.com/lazydao/raft-win/releases) 下载最新的 `Pontoon_<版本>_x64-setup.exe` 并运行，安装到当前用户目录，不需要管理员权限。如果系统里没有 WebView2 运行时（Windows 10 的较旧版本可能没有），安装程序会自动下载。
 
 安装包目前没有代码签名，第一次运行时 SmartScreen 可能会拦截，点"更多信息 → 仍要运行"即可。
 
@@ -52,6 +52,15 @@ RAFT_SOURCE=../raft-source npm run test:web          # 用官方网页代码做�
 ```
 
 后两项测试需要先克隆 [botiverse/raft-source](https://github.com/botiverse/raft-source)，测试会直接用里面的 `desktop-contract` 校验器和网页端的桌面桥接代码，确认 Pontoon 的返回值和注入脚本能被官方网页接受。
+
+### 发版
+
+每次推送到 main 和每个合并请求，GitHub Actions 都会在 Windows 上编译并测试安装包。推送 `v` 开头的标签会自动发布 Release：
+
+1. 把 `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和 `package.json` 里的版本号改成新版本（例如 0.4.2），合并到 main。
+2. 在 main 上打标签并推送：`git tag v0.4.2 && git push origin v0.4.2`。
+
+Actions 会先检查标签和版本号是否一致，然后编译、测试，把安装包和 `SHA256SUMS.txt` 发布到 Releases，更新记录从合并请求自动生成。带后缀的标签（如 `v0.4.2-rc.1`）会发布成预发布版本。
 
 ## 工作原理
 

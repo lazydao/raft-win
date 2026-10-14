@@ -76,6 +76,8 @@
       serverId: typeof p.serverId === "string" ? p.serverId : null,
       url: typeof p.url === "string" ? p.url : null,
       attribution: text(p.serverName) || null,
+      // By default only DMs and @mentions count (the native side decides).
+      important: p.kind === "dm" || p.mentioned === true,
     });
   }
 

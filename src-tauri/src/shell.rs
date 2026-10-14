@@ -4,7 +4,7 @@ use std::io::Write as _;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
@@ -297,7 +297,19 @@ fn tray_menu(app: &AppHandle, closing: Option<&str>) -> tauri::Result<Menu<tauri
     }
     menu.append(&MenuItem::with_id(app, "reload", "重新加载", true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "fonts", "字体设置…", true, None::<&str>)?)?;
-    menu.append(&CheckMenuItem::with_id(app, "notifications", "新消息通知", true, notify::toasts_enabled(app), None::<&str>)?)?;
+    let all = notify::all_messages(app);
+    let which = Submenu::with_id_and_items(
+        app,
+        "notify-scope",
+        "提醒哪些消息",
+        true,
+        &[
+            &CheckMenuItem::with_id(app, "notify-important", "只提醒私信和 @我", true, !all, None::<&str>)?,
+            &CheckMenuItem::with_id(app, "notify-all", "所有新消息", true, all, None::<&str>)?,
+        ],
+    )?;
+    menu.append(&which)?;
+    menu.append(&CheckMenuItem::with_id(app, "notifications", "弹出 Windows 通知", true, notify::toasts_enabled(app), None::<&str>)?)?;
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
     menu.append(&CheckMenuItem::with_id(app, "autostart", "开机时启动", true, autostart_enabled, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -342,6 +354,8 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 font::open_settings_from_handler(app);
             }
             "notifications" => notify::toggle_toasts(app),
+            "notify-important" => notify::set_all_messages(app, false),
+            "notify-all" => notify::set_all_messages(app, true),
             "autostart" => {
                 let launcher = app.autolaunch();
                 let enabled = launcher.is_enabled().unwrap_or(false);

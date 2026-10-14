@@ -207,15 +207,15 @@ push.ws.send(`42${JSON.stringify(["dm:new", { messageId: "x" }])}`);
 await until(async () => (await callsOf("shell_notify")).length >= 5, "push notifications");
 await page.waitForTimeout(200);
 const pushed = await callsOf("shell_notify");
-const n = (title, body, id, url) => ({ title, body, id, serverId: S1, url, attribution: "Acme" });
+const n = (title, body, id, url, important) => ({ title, body, id, serverId: S1, url, attribution: "Acme", important });
 assert.deepEqual(pushed, [
-  n("Alice", "hello", "p1", "https://app.raft.build/s/acme/dm/d1?msg=p1"),
-  n("Bob 在 #general 提到了你", "look", "p2", "https://app.raft.build/s/acme/channel/c1?msg=p2"),
-  n("Bob · #general", "[2 个附件]", "p3", "https://app.raft.build/s/acme/channel/c1?msg=p3"),
-  n("Cat · #dev 的话题", "done", "p4", "https://app.raft.build/s/acme/channel/c2?thread=c2%3Am&msg=p4"),
-  { title: "DM · Acme", body: "Someone: hi", id: "p5", serverId: null, url: null, attribution: null },
+  n("Alice", "hello", "p1", "https://app.raft.build/s/acme/dm/d1?msg=p1", true),
+  n("Bob 在 #general 提到了你", "look", "p2", "https://app.raft.build/s/acme/channel/c1?msg=p2", true),
+  n("Bob · #general", "[2 个附件]", "p3", "https://app.raft.build/s/acme/channel/c1?msg=p3", false),
+  n("Cat · #dev 的话题", "done", "p4", "https://app.raft.build/s/acme/channel/c2?thread=c2%3Am&msg=p4", false),
+  { title: "DM · Acme", body: "Someone: hi", id: "p5", serverId: null, url: null, attribution: null, important: true },
 ]);
-console.log("ok   notification:push events become notifications for DMs, channels and threads");
+console.log("ok   notification:push events become notifications for DMs, channels and threads; only DMs and @mentions are important");
 
 // A refused connect closes the socket, which reports itself down and retries.
 push.ws.send('44{"message":"Invalid or expired token"}');

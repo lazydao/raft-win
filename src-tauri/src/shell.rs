@@ -1,6 +1,5 @@
-//! Window, tray, navigation policy and notifications.
+//! Window, tray and navigation policy.
 
-use std::collections::VecDeque;
 use std::io::Write as _;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -8,13 +7,13 @@ use std::time::{Duration, Instant};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
-use tauri::{AppHandle, Manager, Url, UserAttentionType, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_autostart::ManagerExt as _;
-use tauri_plugin_notification::NotificationExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 
 use crate::contract::{self, FRONTEND_ORIGIN};
 use crate::font;
+use crate::notify;
 use crate::server_window;
 
 pub const MAIN_WINDOW: &str = "server-main";
@@ -179,6 +178,8 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
         .visible(false)
         .zoom_hotkeys_enabled(true)
         .initialization_script(contract::environment_init_script())
+        // The main window keeps the socket for Raft's own notification events.
+        .initialization_script(format!("window.__PONTOON_NOTIFY_PRIMARY__ = {};", label == MAIN_WINDOW))
         .initialization_script(include_str!("notify.js"))
         .initialization_script(include_str!("font.js"))
         .on_navigation(move |url| {
@@ -233,29 +234,45 @@ fn version_label(version: &str) -> String {
     format!("Pontoon {version}")
 }
 
-/// The tray tooltip: the main window's server title, if it has one, over the
-/// version. Windows cuts tray tooltips at 127 characters, so a long title is
-/// shortened first and the version line always fits.
-fn tooltip_text(version: &str, title: Option<&str>) -> String {
-    let version = version_label(version);
-    match title.map(str::trim).filter(|t| !t.is_empty()) {
-        Some(t) => {
-            let room = 127 - version.chars().count() - 1;
-            let t: String = if t.chars().count() > room {
-                t.chars().take(room - 1).chain(std::iter::once('…')).collect()
-            } else {
-                t.to_string()
-            };
-            format!("{t}\n{version}")
-        }
-        None => version,
+/// The tray tooltip: how many new messages are waiting, if any, then the
+/// main window's server title, if it has one, then the version. Windows cuts
+/// tray tooltips at 127 characters, so a long title is shortened first and
+/// the other lines always fit.
+fn tooltip_text(version: &str, title: Option<&str>, unread: u32) -> String {
+    let mut lines = Vec::new();
+    if unread > 0 {
+        lines.push(format!("{unread} 条新消息"));
     }
+    let version = version_label(version);
+    if let Some(t) = title.map(str::trim).filter(|t| !t.is_empty()) {
+        let used: usize = lines.iter().map(|l: &String| l.chars().count() + 1).sum();
+        let room = 127 - used - version.chars().count() - 1;
+        let t: String = if t.chars().count() > room {
+            t.chars().take(room - 1).chain(std::iter::once('…')).collect()
+        } else {
+            t.to_string()
+        };
+        lines.push(t);
+    }
+    lines.push(version);
+    lines.join("\n")
 }
+
+/// The main window's server title, as the tooltip shows it.
+static TRAY_TITLE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Updates the tray tooltip; `title` is the main window's server title.
 pub fn set_tray_tooltip(app: &AppHandle, title: Option<&str>) {
+    *TRAY_TITLE.lock().unwrap() = title.map(str::to_string);
+    refresh_tray_tooltip(app);
+}
+
+/// Redraws the tray tooltip, after the title or the unread count changed.
+pub fn refresh_tray_tooltip(app: &AppHandle) {
+    let title = TRAY_TITLE.lock().unwrap().clone();
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(tooltip_text(&app.package_info().version.to_string(), title)));
+        let text = tooltip_text(&app.package_info().version.to_string(), title.as_deref(), notify::total_unread(app));
+        let _ = tray.set_tooltip(Some(text));
     }
 }
 
@@ -280,6 +297,7 @@ fn tray_menu(app: &AppHandle, closing: Option<&str>) -> tauri::Result<Menu<tauri
     }
     menu.append(&MenuItem::with_id(app, "reload", "重新加载", true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "fonts", "字体设置…", true, None::<&str>)?)?;
+    menu.append(&CheckMenuItem::with_id(app, "notifications", "新消息通知", true, notify::toasts_enabled(app), None::<&str>)?)?;
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
     menu.append(&CheckMenuItem::with_id(app, "autostart", "开机时启动", true, autostart_enabled, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -306,7 +324,7 @@ fn set_tray_menu(app: &AppHandle, closing: Option<&str>) {
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().expect("bundled icon"))
-        .tooltip(tooltip_text(&app.package_info().version.to_string(), None))
+        .tooltip(tooltip_text(&app.package_info().version.to_string(), None, 0))
         .menu(&tray_menu(app, None)?)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
@@ -323,6 +341,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             "fonts" => {
                 font::open_settings_from_handler(app);
             }
+            "notifications" => notify::toggle_toasts(app),
             "autostart" => {
                 let launcher = app.autolaunch();
                 let enabled = launcher.is_enabled().unwrap_or(false);
@@ -351,38 +370,6 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
-}
-
-/// Message IDs already notified. Every server window has its own socket, and
-/// some messages (thread replies you follow) reach all of them.
-static NOTIFIED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
-
-/// True the first time `id` is seen across all windows.
-fn first_notification(id: &str) -> bool {
-    let mut seen = NOTIFIED.lock().unwrap();
-    if seen.iter().any(|s| s == id) {
-        return false;
-    }
-    if seen.len() >= 500 {
-        seen.pop_front();
-    }
-    seen.push_back(id.chars().take(64).collect());
-    true
-}
-
-#[tauri::command]
-pub fn shell_notify(app: AppHandle, window: WebviewWindow, title: String, body: String, id: Option<String>) {
-    if let Some(id) = id {
-        if !first_notification(&id) {
-            return;
-        }
-    }
-    let title: String = title.chars().take(160).collect();
-    let body: String = body.chars().take(512).collect();
-    let _ = app.notification().builder().title(title).body(body).show();
-    if !window.is_focused().unwrap_or(false) {
-        let _ = window.request_user_attention(Some(UserAttentionType::Informational));
-    }
 }
 
 #[cfg(test)]
@@ -416,19 +403,16 @@ mod tests {
     #[test]
     fn version_shows_in_the_tray() {
         assert_eq!(version_label("0.4.1"), "Pontoon 0.4.1");
-        assert_eq!(tooltip_text("0.4.1", None), "Pontoon 0.4.1");
-        assert_eq!(tooltip_text("0.4.1", Some("  ")), "Pontoon 0.4.1");
-        assert_eq!(tooltip_text("0.4.1", Some("general · Acme | Raft")), "general · Acme | Raft\nPontoon 0.4.1");
-        let long = tooltip_text("0.4.1", Some(&"长".repeat(200)));
+        assert_eq!(tooltip_text("0.4.1", None, 0), "Pontoon 0.4.1");
+        assert_eq!(tooltip_text("0.4.1", Some("  "), 0), "Pontoon 0.4.1");
+        assert_eq!(tooltip_text("0.4.1", Some("general · Acme | Raft"), 0), "general · Acme | Raft\nPontoon 0.4.1");
+        assert_eq!(tooltip_text("0.4.1", None, 3), "3 条新消息\nPontoon 0.4.1");
+        let unread = tooltip_text("0.4.1", Some(&"长".repeat(200)), 12);
+        assert_eq!(unread.chars().count(), 127);
+        assert!(unread.starts_with("12 条新消息\n长"));
+        let long = tooltip_text("0.4.1", Some(&"长".repeat(200)), 0);
         assert_eq!(long.chars().count(), 127);
         assert!(long.ends_with("…\nPontoon 0.4.1"));
-    }
-
-    #[test]
-    fn notifications_are_deduplicated_across_windows() {
-        assert!(first_notification("dedupe-test-1"));
-        assert!(!first_notification("dedupe-test-1"));
-        assert!(first_notification("dedupe-test-2"));
     }
 
     #[test]

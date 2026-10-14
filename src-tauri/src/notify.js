@@ -1,17 +1,24 @@
 // Desktop notifications for app.raft.build.
 //
-// The web client only delivers system notifications through Web Push, which
-// WebView2 does not support, and the official desktop shells fire their own
-// notifications natively. This script does the same job here: it watches the
-// page's Socket.IO frames for `message:new` and asks the native side to show a
-// Windows notification when the message is a DM or mentions the signed-in user
-// and the window is not focused.
+// Raft's server decides who to notify about each message: everyone in a DM,
+// the members of a channel, the followers of a thread, minus whatever they
+// muted. It sends that decision as `notification:push` events, but only to
+// sockets that identify as Raft's mobile app; the web client itself relies on
+// Web Push, which WebView2 does not have. So the main window opens one such
+// socket of its own (one for all servers) and hands each event to the native
+// side, which shows the Windows notification and marks the window unread.
+//
+// While that socket is down, every window also watches its page's own
+// Socket.IO frames for `message:new` and reports DMs and @mentions, the
+// cases that matter most. The native side ignores those reports while the
+// push socket is live and drops a message it has already handled.
 (function () {
   if (window.location.origin !== "https://app.raft.build") return;
   if (window.__PONTOON_NOTIFY__) return;
   window.__PONTOON_NOTIFY__ = true;
 
   var API = "https://api.raft.build/api";
+  var PUSH_SOCKET = "wss://api.raft.build/socket.io/?EIO=4&transport=websocket";
   var NativeWebSocket = window.WebSocket;
   var seen = new Set();
   var me = null;
@@ -24,9 +31,125 @@
     return internals.invoke(cmd, args).catch(function () {});
   }
 
+  function accessToken() {
+    try { return window.localStorage.getItem("slock_access_token"); } catch (e) { return null; }
+  }
+
+  function text(v) {
+    return typeof v === "string" ? v.trim() : "";
+  }
+
+  // ---- Raft's own notification events (main window only) ----
+
+  // The server writes these few bodies in English.
+  function previewText(p) {
+    var s = text(p.messagePreview);
+    var n = /^Sent (\d+) attachments$/.exec(s);
+    if (s === "Sent an attachment") return "[附件]";
+    if (n) return "[" + n[1] + " 个附件]";
+    if (s === "(no text)") return "新消息";
+    return s;
+  }
+
+  // What a notification says, from the event's fields; the server's own
+  // English title and body are the fallback.
+  function describe(p) {
+    var sender = text(p.senderName);
+    var preview = previewText(p);
+    var channel = text(p.channelName);
+    if (!sender) return { title: text(p.title) || "Raft", body: text(p.body) || preview || "新消息" };
+    var title;
+    if (p.kind === "dm") title = sender;
+    else if (p.kind === "thread") title = sender + " · " + (p.parentChannelKind === "dm" ? "私信" : "#" + channel) + " 的话题";
+    else if (p.mentioned === true) title = sender + " 在 #" + channel + " 提到了你";
+    else title = sender + " · #" + channel;
+    return { title: title, body: preview || "新消息" };
+  }
+
+  function onPush(p) {
+    if (!p || typeof p !== "object" || typeof p.messageId !== "string") return;
+    var d = describe(p);
+    invoke("shell_notify", {
+      title: d.title,
+      body: d.body,
+      id: p.messageId,
+      serverId: typeof p.serverId === "string" ? p.serverId : null,
+      url: typeof p.url === "string" ? p.url : null,
+      attribution: text(p.serverName) || null,
+    });
+  }
+
+  // A minimal Socket.IO v4 client over a plain WebSocket: open, connect to
+  // the default namespace with the access token, answer pings, read events.
+  var push = { ws: null, token: null, retry: 0, timer: null };
+
+  function schedulePush(ms) {
+    clearTimeout(push.timer);
+    push.timer = setTimeout(connectPush, ms);
+  }
+
+  function retryDelay() {
+    var ms = Math.min(60000, 2000 * Math.pow(2, push.retry++));
+    return ms / 2 + Math.random() * ms / 2;
+  }
+
+  function connectPush() {
+    if (push.ws) return;
+    var token = accessToken();
+    if (!token) { schedulePush(5000); return; }
+    var ws;
+    try { ws = new NativeWebSocket(PUSH_SOCKET); } catch (e) { schedulePush(retryDelay()); return; }
+    push.ws = ws;
+    push.token = token;
+    ws.onmessage = function (event) {
+      var data = event.data;
+      if (typeof data !== "string" || !data) return;
+      if (data.charAt(0) === "0") {
+        // Engine.IO is open; join the default namespace as a mobile client,
+        // the kind the server sends notification events to.
+        ws.send("40" + JSON.stringify({ token: token, clientKind: "mobile" }));
+      } else if (data === "2") {
+        ws.send("3");
+        invoke("notify_push_state", { live: true });
+      } else if (data.slice(0, 2) === "40") {
+        push.retry = 0;
+        invoke("notify_push_state", { live: true });
+      } else if (data.slice(0, 2) === "44" || data.slice(0, 2) === "41") {
+        // Refused (an expired token, usually) or disconnected by the server.
+        ws.close();
+      } else if (data.slice(0, 2) === "42") {
+        var packet = parseEvent(data);
+        if (packet && packet[0] === "notification:push") onPush(packet[1]);
+      }
+    };
+    ws.onclose = function () {
+      if (push.ws !== ws) return;
+      push.ws = null;
+      invoke("notify_push_state", { live: false });
+      schedulePush(retryDelay());
+    };
+  }
+
+  // The web client refreshes the access token on its own. Follow it, so a
+  // sign-out closes the socket and a new sign-in (maybe another account)
+  // reconnects with the new token.
+  function followToken() {
+    var token = accessToken();
+    if (push.ws && token !== push.token) {
+      push.ws.close();
+      if (token) { push.retry = 0; schedulePush(500); }
+    }
+  }
+
+  if (window.__PONTOON_NOTIFY_PRIMARY__ === true) {
+    connectPush();
+    setInterval(followToken, 15000);
+  }
+
+  // ---- The page's own socket, as a fallback (every window) ----
+
   function currentUserId() {
-    var token = null;
-    try { token = window.localStorage.getItem("slock_access_token"); } catch (e) {}
+    var token = accessToken();
     if (!token) return Promise.resolve(null);
     if (me && meToken === token) return Promise.resolve(me);
     if (mePending) return mePending;
@@ -42,8 +165,8 @@
     return mePending;
   }
 
-  function preview(text) {
-    var s = String(text || "")
+  function preview(content) {
+    var s = String(content || "")
       .replace(/<@?[a-z]+:[0-9a-f-]{36}\|?([^>]*)>/gi, "@$1")
       .replace(/[`*_~>#]/g, "")
       .replace(/\s+/g, " ")
@@ -66,28 +189,30 @@
         return m && m.type === "user" && m.id === uid;
       });
       if (!isDm && !mentioned) return;
-      if (document.hasFocus() && document.visibilityState === "visible") return;
       var sender = msg.senderDisplayName || msg.senderName || "Raft";
       var body = preview(msg.content);
       if (!body && Array.isArray(msg.attachments) && msg.attachments.length) body = "[附件]";
       invoke("shell_notify", {
         title: isDm ? sender : sender + " 提到了你",
         body: body || "新消息",
-        // Lets the native side drop the same message arriving in another window.
+        // Lets the native side drop the same message from another source.
         id: msg.id,
+        fallback: true,
       });
     });
+  }
+
+  function parseEvent(data) {
+    var m = /^42(?:\/[^,]*,)?\d*(\[[\s\S]*\])$/.exec(data);
+    if (!m) return null;
+    try { return JSON.parse(m[1]); } catch (e) { return null; }
   }
 
   function onFrame(data) {
     if (typeof data !== "string" || data.charCodeAt(0) !== 52 /* 4 */ || data.charCodeAt(1) !== 50 /* 2 */) return;
     if (data.indexOf("\"message:new\"") === -1) return;
-    var m = /^42(?:\/[^,]*,)?\d*(\[[\s\S]*\])$/.exec(data);
-    if (!m) return;
-    try {
-      var packet = JSON.parse(m[1]);
-      if (packet[0] === "message:new") handleMessage(packet[1]);
-    } catch (e) {}
+    var packet = parseEvent(data);
+    if (packet && packet[0] === "message:new") handleMessage(packet[1]);
   }
 
   function PatchedWebSocket(url, protocols) {
@@ -104,5 +229,4 @@
     Object.defineProperty(PatchedWebSocket, k, { value: NativeWebSocket[k] });
   });
   window.WebSocket = PatchedWebSocket;
-
 })();

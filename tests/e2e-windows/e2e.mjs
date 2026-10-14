@@ -110,11 +110,12 @@ if (scenario === "online") {
     const r = await call("window_focus", null);
     assert.equal(r.method, "window.focus");
   });
-  await check("native notification command", async () => {
-    await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("shell_notify", { title: "Pontoon E2E", body: "Test notification" }));
-  });
-  await check("notification hook installed", async () => {
+  await check("notification hook installed in the main window", async () => {
     assert.equal(await page.evaluate(() => window.__PONTOON_NOTIFY__), true);
+    assert.equal(await page.evaluate(() => window.__PONTOON_NOTIFY_PRIMARY__), true);
+  });
+  await check("notify_push_state is callable from Raft", async () => {
+    await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("notify_push_state", { live: true }));
   });
   await check("remote page cannot call unlisted native commands", async () => {
     const err = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:opener|open_url", { url: "https://example.com" }).then(() => null, (e) => String(e)));
@@ -233,6 +234,30 @@ if (scenario === "font") {
     const r = await invoke(settings, "font_set", { fonts: { ui: TEST.ui, chat: null, code: 'x"} body{display:none' } });
     assert.ok(r.error, "an unsafe name was accepted");
     assert.ok(uses((await fontsOnPage(main)).code, TEST.code));
+  });
+}
+
+if (scenario === "notify") {
+  // run-e2e.ps1 minimizes the window first: a window you are looking at gets
+  // no notification. The id is fresh each run, so it is never a duplicate.
+  const page = await waitForPage((u) => u.startsWith("https://app.raft.build/"));
+  await check("a notification for a window in the background", async () => {
+    await page.evaluate((id) => window.__TAURI_INTERNALS__.invoke("shell_notify", {
+      title: "Pontoon E2E", body: "测试通知，可以忽略", id, url: "https://app.raft.build/", attribution: "E2E",
+    }), `e2e-${Date.now()}`);
+  });
+  await check("the same message again is dropped", async () => {
+    await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("shell_notify", { title: "Pontoon E2E", body: "重复消息测试", id: "e2e-dup" }));
+    await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("shell_notify", { title: "Pontoon E2E", body: "重复消息测试", id: "e2e-dup" }));
+  });
+}
+
+if (scenario === "focus") {
+  // Brings the window back the way a toast click does; focusing it clears its badge.
+  const page = await waitForPage((u) => u.startsWith("https://app.raft.build/"));
+  await check("window.focus brings the window back", async () => {
+    const r = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("window_focus", {}));
+    assert.equal(r.method, "window.focus");
   });
 }
 

@@ -83,6 +83,61 @@ Add-Type -Namespace Pontoon -Name Win32 -MemberDefinition @'
 '@
 if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft") -ne [System.IntPtr]::Zero) { Pass "native window title follows window.setServerTitle" } else { Fail "no top-level window titled 'E2E check | Raft'" }
 
+Write-Host "== Notifications"
+# notifications.log records what happened to each message (never its text).
+$notifyLog = Join-Path $env:LOCALAPPDATA "build.pontoon.desktop\logs\notifications.log"
+function Notify-LogLines { if (Test-Path $notifyLog) { @(Get-Content $notifyLog) } else { @() } }
+$deadline = (Get-Date).AddSeconds(30)
+while (-not ((Notify-LogLines) -match "push-socket connected") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+if ((Notify-LogLines) -match "push-socket connected") { Pass "the main window's push socket connected to Raft" } else { Fail "no 'push-socket connected' in $notifyLog" }
+$aumidKey = "HKCU:\Software\Classes\AppUserModelId\build.pontoon.desktop"
+if ((Get-ItemProperty $aumidKey -ErrorAction SilentlyContinue).DisplayName -eq "Pontoon") { Pass "notification identity registered" } else { Fail "$aumidKey missing or without DisplayName" }
+Add-Type -Namespace Pontoon -Name Show -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hwnd, int cmd);'
+$e2eWindow = [Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft")
+[Pontoon.Show]::ShowWindow($e2eWindow, 6) | Out-Null  # minimize
+Start-Sleep -Seconds 1
+$linesBefore = (Notify-LogLines).Count
+if ((Run-Node "notify") -eq 0) { Pass "notify scenario" } else { Fail "notify scenario" }
+Start-Sleep -Seconds 2
+$newLines = @(Notify-LogLines | Select-Object -Skip $linesBefore)
+$newLines | ForEach-Object { Write-Host "      log: $_" }
+# Whether Windows displays toasts is the user's own setting (Settings > System >
+# Notifications). When it is off, Pontoon still hands the toast over and shows
+# the taskbar badge; only the display checks are skipped.
+$toastsOff = [bool]($newLines -match "push shown windows-setting=Disabled")
+if ($newLines -match "push shown windows-setting=Enabled") { Pass "Windows showed the toast (notifications enabled for Pontoon)" }
+elseif ($toastsOff) { Write-Host "SKIP  toast handed to Windows, but this user has notifications turned off: $(@($newLines -match 'push shown')[0])" -ForegroundColor Yellow }
+else { Fail "no toast shown" }
+# A picture of the taskbar with the badge, for a person to look at.
+try {
+  Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+  # Without this, a scaled display reports logical pixels and the capture misses the taskbar.
+  Add-Type -Namespace Pontoon -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+  [Pontoon.Dpi]::SetProcessDPIAware() | Out-Null
+  $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+  $full = $screen.Bounds; $work = $screen.WorkingArea
+  # The strip below the working area is the taskbar (bottom-docked); keep a little above it.
+  $top = [Math]::Max($full.Top, $work.Bottom - 40)
+  $height = $full.Bottom - $top
+  if ($height -lt 40) { $top = $full.Bottom - 200; $height = 200 }
+  $bmp = New-Object System.Drawing.Bitmap $full.Width, $height
+  [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($full.Left, $top, 0, 0, $bmp.Size)
+  $shot = Join-Path $env:TEMP "pontoon-e2e-badge.png"
+  $bmp.Save($shot); $bmp.Dispose()
+  Write-Host "      screenshot of the taskbar with the badge: $shot ($($full.Width)x$height)"
+} catch { Write-Host "      (no screenshot: $($_.Exception.Message))" }
+if ($newLines -match "^\d+ badge 1$") { Pass "the minimized window got an unread badge on its taskbar button" } else { Fail "no 'badge 1' in the log" }
+if (@($newLines -match "push skipped Duplicate").Count -eq 1) { Pass "a repeated message is not shown twice" } else { Fail "expected one 'push skipped Duplicate'" }
+if ($toastsOff) { Write-Host "SKIP  notification center check (notifications off)" -ForegroundColor Yellow } else { try {
+  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+  $history = [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory("build.pontoon.desktop")
+  if ($history.Count -gt 0) { Pass "toast is in the notification center ($($history.Count) from Pontoon)" } else { Fail "notification center has no Pontoon toast" }
+} catch { Write-Host "      (could not read the notification center: $($_.Exception.Message))" } }
+[Pontoon.Show]::ShowWindow($e2eWindow, 9) | Out-Null  # restore
+Run-Node "focus" | Out-Null
+Start-Sleep -Seconds 2
+if ((Notify-LogLines | Select-Object -Skip $linesBefore) -match "^\d+ badge 0$") { Pass "restoring the window clears its badge" } else { Fail "badge not cleared after the window was restored" }
+
 # A second launch passes its arguments to the running app and exits. It
 # waits for the running app to take them, for at most 10 s, so a slow or
 # stuck running app shows up as a slow exit.

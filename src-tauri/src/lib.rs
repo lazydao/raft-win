@@ -1,5 +1,6 @@
 mod contract;
 mod font;
+mod notify;
 mod server_window;
 mod shell;
 
@@ -23,10 +24,10 @@ pub fn run() {
                 .with_state_flags(StateFlags::all() - StateFlags::VISIBLE)
                 .build(),
         )
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(contract::ContractState::default())
         .manage(font::FontState::default())
+        .manage(notify::NotifyState::default())
         .manage(server_window::ServerWindows::default())
         .invoke_handler(tauri::generate_handler![
             contract::desktop_handshake,
@@ -36,13 +37,15 @@ pub fn run() {
             contract::window_set_server_title,
             contract::recovery_retry,
             contract::recovery_quit,
-            shell::shell_notify,
+            notify::shell_notify,
+            notify::notify_push_state,
             font::font_get,
             font::font_set,
             font::font_list,
         ])
         .setup(|app| {
             font::load(app.handle());
+            notify::load(app.handle());
             let start_hidden = std::env::args().any(|a| a == shell::HIDDEN_ARG);
             shell::create_tray(app.handle())?;
             server_window::restore(app.handle(), start_hidden)?;
@@ -64,7 +67,12 @@ pub fn run() {
                     server_window::forget(window.app_handle(), window.label());
                 }
             }
+            // Looking at a window counts its new messages as seen.
+            WindowEvent::Focused(true) if server_window::is_server_window(window.label()) => {
+                notify::clear_unread(window.app_handle(), window.label());
+            }
             WindowEvent::Destroyed if server_window::is_server_window(window.label()) => {
+                notify::clear_unread(window.app_handle(), window.label());
                 shell::refresh_tray_without(window.app_handle(), window.label());
             }
             _ => {}

@@ -10,6 +10,7 @@
     "allow-window-bind-server",
     "allow-window-open-server",
     "allow-window-set-server-title",
-    "allow-shell-notify"
+    "allow-shell-notify",
+    "allow-notify-push-state"
   ]
 }

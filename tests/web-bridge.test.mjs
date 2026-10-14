@@ -8,7 +8,10 @@
 //   2. it performs one handshake with the identity we issue,
 //   3. it sees the window.setServerTitle and window.openServer native extensions,
 //   4. it binds the window to its server and can open a server in a new window,
-//   5. notify.js turns DMs and @mentions into shell_notify calls (and nothing else).
+//   5. notify.js in the main window opens a push socket as a mobile client and
+//      turns Raft's notification:push events into shell_notify calls,
+//   6. and every window reports DMs and @mentions from its page's own socket
+//      as fallback shell_notify calls (and nothing else).
 //
 // Usage: RAFT_SOURCE=/path/to/raft-source node tests/web-bridge.test.mjs
 import { execFileSync } from "node:child_process";
@@ -108,8 +111,13 @@ await page.route("https://app.raft.build/**", (route) =>
 await page.route("https://api.raft.build/api/auth/me", (route) =>
   route.fulfill({ contentType: "application/json", body: JSON.stringify({ id: ME }) }),
 );
-let socket;
-await page.routeWebSocket(/api\.raft\.build/, (ws) => { socket = ws; });
+// Every socket the page opens, with what it sent.
+const sockets = [];
+await page.routeWebSocket(/api\.raft\.build/, (ws) => {
+  const entry = { ws, sent: [] };
+  ws.onMessage((m) => entry.sent.push(m));
+  sockets.push(entry);
+});
 
 // Mock of the native bridge: answers with the envelopes the Rust code produced.
 await page.addInitScript(({ handshakeOk, titleOk, bindOk, openOk }) => {
@@ -128,6 +136,8 @@ await page.addInitScript(({ handshakeOk, titleOk, bindOk, openOk }) => {
   localStorage.setItem("raft_desktop_environment_generation", "1");
 }, { handshakeOk, titleOk, bindOk, openOk });
 await page.addInitScript(scripts.environment);
+// What the native shell injects into the main window before notify.js.
+await page.addInitScript("window.__PONTOON_NOTIFY_PRIMARY__ = true;");
 await page.addInitScript(notifyJs);
 
 await page.goto("https://app.raft.build/");
@@ -164,14 +174,61 @@ const open = (await page.evaluate(() => window.__CALLS__)).find((c) => c.command
 assert.deepEqual(open.args.params, { serverId: OTHER_SERVER, documentGeneration: 7, documentNonce: calls[0].args.params.documentNonce });
 console.log("ok   Ctrl-click on a server opens it through window.openServer");
 
-// Notifications from Socket.IO frames.
-await page.evaluate(() => {
-  document.hasFocus = () => false;
-  new WebSocket("wss://api.raft.build/socket.io/?EIO=4&transport=websocket");
-});
-await page.waitForFunction(() => true);
-for (let i = 0; i < 50 && !socket; i++) await page.waitForTimeout(20);
-assert.ok(socket, "socket was not opened");
+// Raft's own notification events, through the main window's push socket.
+const until = async (fn, what) => {
+  for (let i = 0; i < 100; i++) { if (await fn()) return; await page.waitForTimeout(20); }
+  throw new Error(`timed out waiting for ${what}`);
+};
+const callsOf = async (command) => (await page.evaluate(() => window.__CALLS__)).filter((c) => c.command === command).map((c) => c.args);
+await until(() => sockets.length >= 1, "the push socket");
+const push = sockets[0];
+assert.match(push.ws.url(), /^wss:\/\/api\.raft\.build\/socket\.io\/\?EIO=4&transport=websocket$/);
+push.ws.send('0{"sid":"e","upgrades":[],"pingInterval":25000,"pingTimeout":20000,"maxPayload":1000000}');
+await until(() => push.sent.length >= 1, "the namespace connect");
+assert.deepEqual(push.sent[0].slice(0, 2), "40");
+assert.deepEqual(JSON.parse(push.sent[0].slice(2)), { token: "test-token", clientKind: "mobile" });
+push.ws.send('40{"sid":"n"}');
+await until(async () => (await callsOf("notify_push_state")).length >= 1, "notify_push_state");
+assert.deepEqual(await callsOf("notify_push_state"), [{ live: true }]);
+push.ws.send("2");
+await until(() => push.sent.includes("3"), "the pong");
+console.log("ok   the main window joins as a mobile client and answers pings");
+
+const S1 = "33333333-3333-4333-8333-333333333333";
+const ev = (p) => push.ws.send(`42${JSON.stringify(["notification:push", p])}`);
+const common = { serverId: S1, serverName: "Acme", senderId: OTHER, senderType: "agent", threadId: null, parentChannelId: null, parentMessageId: null };
+ev({ ...common, kind: "dm", channelId: "d1", messageId: "p1", senderName: "Alice", messagePreview: "hello", title: "DM · Acme", body: "Alice: hello", tag: "message:p1", url: "https://app.raft.build/s/acme/dm/d1?msg=p1", mentioned: false });
+ev({ ...common, kind: "channel", channelId: "c1", channelName: "general", messageId: "p2", senderName: "Bob", messagePreview: "look", mentioned: true, url: "https://app.raft.build/s/acme/channel/c1?msg=p2" });
+ev({ ...common, kind: "channel", channelId: "c1", channelName: "general", messageId: "p3", senderName: "Bob", messagePreview: "Sent 2 attachments", mentioned: false, url: "https://app.raft.build/s/acme/channel/c1?msg=p3" });
+ev({ ...common, kind: "thread", channelId: "t1", threadId: "t1", parentChannelKind: "channel", channelName: "dev", messageId: "p4", senderName: "Cat", messagePreview: "done", url: "https://app.raft.build/s/acme/channel/c2?thread=c2%3Am&msg=p4" });
+ev({ kind: "dm", messageId: "p5", title: "DM · Acme", body: "Someone: hi" }); // no sender fields
+ev({ title: "no message id" });
+push.ws.send(`42${JSON.stringify(["dm:new", { messageId: "x" }])}`);
+await until(async () => (await callsOf("shell_notify")).length >= 5, "push notifications");
+await page.waitForTimeout(200);
+const pushed = await callsOf("shell_notify");
+const n = (title, body, id, url) => ({ title, body, id, serverId: S1, url, attribution: "Acme" });
+assert.deepEqual(pushed, [
+  n("Alice", "hello", "p1", "https://app.raft.build/s/acme/dm/d1?msg=p1"),
+  n("Bob 在 #general 提到了你", "look", "p2", "https://app.raft.build/s/acme/channel/c1?msg=p2"),
+  n("Bob · #general", "[2 个附件]", "p3", "https://app.raft.build/s/acme/channel/c1?msg=p3"),
+  n("Cat · #dev 的话题", "done", "p4", "https://app.raft.build/s/acme/channel/c2?thread=c2%3Am&msg=p4"),
+  { title: "DM · Acme", body: "Someone: hi", id: "p5", serverId: null, url: null, attribution: null },
+]);
+console.log("ok   notification:push events become notifications for DMs, channels and threads");
+
+// A refused connect closes the socket, which reports itself down and retries.
+push.ws.send('44{"message":"Invalid or expired token"}');
+await until(async () => (await callsOf("notify_push_state")).some((a) => a.live === false), "the socket to report itself down");
+await until(() => sockets.length >= 2, "a reconnect");
+assert.match(sockets[1].ws.url(), /EIO=4/);
+console.log("ok   a refused push socket reports itself down and reconnects");
+
+// The page's own socket: DMs and mentions, marked as fallback.
+const before = (await callsOf("shell_notify")).length;
+await page.evaluate(() => { new WebSocket("wss://api.raft.build/socket.io/?EIO=4&transport=websocket&page=1"); });
+await until(() => sockets.some((x) => x.ws.url().endsWith("page=1")), "the page socket");
+const socket = sockets.find((x) => x.ws.url().endsWith("page=1")).ws;
 const frame = (msg) => socket.send(`42${JSON.stringify(["message:new", msg])}`);
 const base = { channelId: "c", content: "hi", createdAt: new Date().toISOString(), senderType: "user" };
 frame({ ...base, id: "m1", senderId: OTHER, senderName: "Alice", conversationContext: { channelType: "dm" }, content: "**hello** there" });
@@ -181,19 +238,11 @@ frame({ ...base, id: "m3", senderId: OTHER, senderName: "Bob", conversationConte
 frame({ ...base, id: "m4", senderId: ME, senderName: "Me", conversationContext: { channelType: "dm" } }); // own message
 socket.send(`42${JSON.stringify(["message:updated", { id: "m5" }])}`);
 await page.waitForTimeout(300);
-const notes = (await page.evaluate(() => window.__CALLS__)).filter((c) => c.command === "shell_notify").map((c) => c.args);
+const notes = (await callsOf("shell_notify")).slice(before);
 assert.deepEqual(notes, [
-  { title: "Alice", body: "hello there", id: "m1" },
-  { title: "Bob 提到了你", body: "look", id: "m3" },
+  { title: "Alice", body: "hello there", id: "m1", fallback: true },
+  { title: "Bob 提到了你", body: "look", id: "m3", fallback: true },
 ]);
-console.log("ok   DMs and mentions notify; duplicates, own messages and plain channel messages do not");
-
-// Focused window: no notification.
-await page.evaluate(() => { document.hasFocus = () => true; });
-frame({ ...base, id: "m6", senderId: OTHER, senderName: "Alice", conversationContext: { channelType: "dm" } });
-await page.waitForTimeout(200);
-const after = (await page.evaluate(() => window.__CALLS__)).filter((c) => c.command === "shell_notify").length;
-assert.equal(after, 2);
-console.log("ok   no notification while the window is focused");
+console.log("ok   the page socket reports DMs and mentions as fallback; duplicates, own messages and plain channel messages do not");
 
 await browser.close();

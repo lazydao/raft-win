@@ -83,6 +83,35 @@ Add-Type -Namespace Pontoon -Name Win32 -MemberDefinition @'
 '@
 if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft") -ne [System.IntPtr]::Zero) { Pass "native window title follows window.setServerTitle" } else { Fail "no top-level window titled 'E2E check | Raft'" }
 
+Write-Host "== Notifications"
+# notifications.log records what happened to each message (never its text).
+$notifyLog = Join-Path $env:LOCALAPPDATA "build.pontoon.desktop\logs\notifications.log"
+function Notify-LogLines { if (Test-Path $notifyLog) { @(Get-Content $notifyLog) } else { @() } }
+$deadline = (Get-Date).AddSeconds(30)
+while (-not ((Notify-LogLines) -match "push-socket connected") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+if ((Notify-LogLines) -match "push-socket connected") { Pass "the main window's push socket connected to Raft" } else { Fail "no 'push-socket connected' in $notifyLog" }
+$aumidKey = "HKCU:\Software\Classes\AppUserModelId\build.pontoon.desktop"
+if ((Get-ItemProperty $aumidKey -ErrorAction SilentlyContinue).DisplayName -eq "Pontoon") { Pass "notification identity registered" } else { Fail "$aumidKey missing or without DisplayName" }
+Add-Type -Namespace Pontoon -Name Show -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hwnd, int cmd);'
+$e2eWindow = [Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft")
+[Pontoon.Show]::ShowWindow($e2eWindow, 6) | Out-Null  # minimize
+Start-Sleep -Seconds 1
+$linesBefore = (Notify-LogLines).Count
+if ((Run-Node "notify") -eq 0) { Pass "notify scenario" } else { Fail "notify scenario" }
+Start-Sleep -Seconds 2
+$newLines = @(Notify-LogLines | Select-Object -Skip $linesBefore)
+$newLines | ForEach-Object { Write-Host "      log: $_" }
+if ($newLines -match "push shown windows-setting=Enabled") { Pass "Windows showed the toast (notifications enabled for Pontoon)" }
+elseif ($newLines -match "push shown") { Fail "toast sent but Windows has Pontoon's notifications off: $($newLines -match 'push shown')" }
+else { Fail "no toast shown" }
+if (@($newLines -match "push skipped Duplicate").Count -eq 1) { Pass "a repeated message is not shown twice" } else { Fail "expected one 'push skipped Duplicate'" }
+try {
+  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+  $history = [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory("build.pontoon.desktop")
+  if ($history.Count -gt 0) { Pass "toast is in the notification center ($($history.Count) from Pontoon)" } else { Fail "notification center has no Pontoon toast" }
+} catch { Write-Host "      (could not read the notification center: $($_.Exception.Message))" }
+[Pontoon.Show]::ShowWindow($e2eWindow, 9) | Out-Null  # restore
+
 # A second launch passes its arguments to the running app and exits. It
 # waits for the running app to take them, for at most 10 s, so a slow or
 # stuck running app shows up as a slow exit.

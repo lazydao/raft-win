@@ -241,6 +241,11 @@ if (scenario === "notify") {
   // run-e2e.ps1 minimizes the window first: a window you are looking at gets
   // no notification. The id is fresh each run, so it is never a duplicate.
   const page = await waitForPage((u) => u.startsWith("https://app.raft.build/"));
+  await check("a plain channel message is left alone by default", async () => {
+    await page.evaluate((id) => window.__TAURI_INTERNALS__.invoke("shell_notify", {
+      title: "Pontoon E2E", body: "普通频道消息测试", id, important: false,
+    }), `e2e-plain-${Date.now()}`);
+  });
   await check("a notification for a window in the background", async () => {
     await page.evaluate((id) => window.__TAURI_INTERNALS__.invoke("shell_notify", {
       title: "Pontoon E2E", body: "测试通知，可以忽略", id, url: "https://app.raft.build/", attribution: "E2E",

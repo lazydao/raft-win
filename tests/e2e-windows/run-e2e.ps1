@@ -101,6 +101,11 @@ if ((Run-Node "notify") -eq 0) { Pass "notify scenario" } else { Fail "notify sc
 Start-Sleep -Seconds 2
 $newLines = @(Notify-LogLines | Select-Object -Skip $linesBefore)
 $newLines | ForEach-Object { Write-Host "      log: $_" }
+$notifySettings = Join-Path $env:APPDATA "build.pontoon.desktop\notifications.json"
+$allMessages = (Test-Path $notifySettings) -and ((Get-Content $notifySettings -Raw) -match '"all_messages"\s*:\s*true')
+if ($newLines -match "push skipped NotImportant") { Pass "a plain channel message gets no notification or badge (only DMs and @mentions count)" }
+elseif ($allMessages) { Write-Host "SKIP  this user chose to be told about all new messages" -ForegroundColor Yellow }
+else { Fail "a plain channel message was not skipped" }
 # Whether Windows displays toasts is the user's own setting (Settings > System >
 # Notifications). When it is off, Pontoon still hands the toast over and shows
 # the taskbar badge; only the display checks are skipped.

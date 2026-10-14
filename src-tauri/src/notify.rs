@@ -7,10 +7,12 @@
 //! minus what you muted). While that socket is down, every window also reports
 //! DMs and @mentions from its page's own socket (`fallback`).
 //!
-//! A message for a window you are looking at changes nothing. Otherwise the
-//! window gets an unread count on its taskbar button and flashes, the tray
-//! icon gets a dot, and a toast is shown unless toasts are turned off in the
-//! tray menu. Focusing the window clears its count.
+//! By default only DMs and messages that @mention you count; the tray menu can
+//! widen that to every message the server reports. A message for a window
+//! you are looking at changes nothing. Otherwise the window gets an unread
+//! count on its taskbar button and flashes, the tray icon gets a dot, and a
+//! toast is shown unless toasts are turned off in the tray menu. Focusing the
+//! window clears its count.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write as _;
@@ -34,6 +36,9 @@ struct Settings {
     /// Show a Windows notification for new messages.
     #[serde(default = "yes")]
     toasts: bool,
+    /// Every message the server reports counts, not only DMs and @mentions.
+    #[serde(default)]
+    all_messages: bool,
 }
 
 fn yes() -> bool {
@@ -42,7 +47,7 @@ fn yes() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { toasts: true }
+        Settings { toasts: true, all_messages: false }
     }
 }
 
@@ -95,12 +100,25 @@ pub fn toasts_enabled(app: &AppHandle) -> bool {
     app.state::<NotifyState>().settings.lock().unwrap().toasts
 }
 
-/// The tray menu's "消息通知" switch.
+pub fn all_messages(app: &AppHandle) -> bool {
+    app.state::<NotifyState>().settings.lock().unwrap().all_messages
+}
+
+/// The tray menu's "弹出 Windows 通知" switch.
 pub fn toggle_toasts(app: &AppHandle) {
+    change_settings(app, |s| s.toasts = !s.toasts);
+}
+
+/// The tray menu's choice between DMs and @mentions only, and all messages.
+pub fn set_all_messages(app: &AppHandle, all: bool) {
+    change_settings(app, |s| s.all_messages = all);
+}
+
+fn change_settings(app: &AppHandle, change: impl FnOnce(&mut Settings)) {
     let settings = {
         let state = app.state::<NotifyState>();
         let mut s = state.settings.lock().unwrap();
-        s.toasts = !s.toasts;
+        change(&mut s);
         *s
     };
     if let Some(path) = settings_path(app) {
@@ -192,15 +210,25 @@ enum Verdict {
     /// The push socket is live and reports this message itself.
     FallbackNotNeeded,
     Duplicate,
+    /// Neither a DM nor an @mention, and only those count.
+    NotImportant,
     Watching,
     Notify,
 }
 
-fn verdict(fallback: bool, push_live: bool, first: impl FnOnce() -> bool, watching: impl FnOnce() -> bool) -> Verdict {
+fn verdict(
+    fallback: bool,
+    push_live: bool,
+    counts: bool,
+    first: impl FnOnce() -> bool,
+    watching: impl FnOnce() -> bool,
+) -> Verdict {
     if fallback && push_live {
         Verdict::FallbackNotNeeded
     } else if !first() {
         Verdict::Duplicate
+    } else if !counts {
+        Verdict::NotImportant
     } else if watching() {
         Verdict::Watching
     } else {
@@ -220,8 +248,11 @@ pub fn shell_notify(
     url: Option<String>,
     attribution: Option<String>,
     fallback: Option<bool>,
+    important: Option<bool>,
 ) {
     let fallback = fallback.unwrap_or(false);
+    // A DM or an @mention; reports that do not say count as one.
+    let important = important.unwrap_or(true);
     let server_id = server_id.filter(|s| is_canonical_uuid(s));
     let url = url.filter(|u| is_app_url(u));
     let source = if fallback { "fallback" } else { "push" };
@@ -229,6 +260,7 @@ pub fn shell_notify(
     let v = verdict(
         fallback,
         push_live(&app),
+        important || all_messages(&app),
         || id.as_deref().map_or(true, first_sighting),
         || is_watching(&app, &target, server_id.as_deref()),
     );
@@ -529,13 +561,15 @@ mod tests {
 
         let t = || true;
         let f = || false;
-        assert_eq!(verdict(false, true, t, f), Verdict::Notify);
-        assert_eq!(verdict(false, false, t, f), Verdict::Notify);
+        assert_eq!(verdict(false, true, true, t, f), Verdict::Notify);
+        assert_eq!(verdict(false, false, true, t, f), Verdict::Notify);
         // Page-socket reports only count while the push socket is down.
-        assert_eq!(verdict(true, true, t, f), Verdict::FallbackNotNeeded);
-        assert_eq!(verdict(true, false, t, f), Verdict::Notify);
-        assert_eq!(verdict(false, true, f, f), Verdict::Duplicate);
-        assert_eq!(verdict(false, true, t, t), Verdict::Watching);
+        assert_eq!(verdict(true, true, true, t, f), Verdict::FallbackNotNeeded);
+        assert_eq!(verdict(true, false, true, t, f), Verdict::Notify);
+        assert_eq!(verdict(false, true, true, f, f), Verdict::Duplicate);
+        assert_eq!(verdict(false, true, true, t, t), Verdict::Watching);
+        // A plain channel message while only DMs and @mentions count.
+        assert_eq!(verdict(false, true, false, t, f), Verdict::NotImportant);
     }
 
     #[test]
@@ -556,8 +590,12 @@ mod tests {
 
     #[test]
     fn settings_default_to_toasts_on() {
-        assert_eq!(serde_json::from_str::<Settings>("{}").unwrap(), Settings { toasts: true });
-        assert_eq!(serde_json::from_str::<Settings>(r#"{"toasts":false}"#).unwrap(), Settings { toasts: false });
+        assert_eq!(serde_json::from_str::<Settings>("{}").unwrap(), Settings { toasts: true, all_messages: false });
+        assert_eq!(
+            serde_json::from_str::<Settings>(r#"{"toasts":false}"#).unwrap(),
+            Settings { toasts: false, all_messages: false }
+        );
+        assert!(serde_json::from_str::<Settings>(r#"{"all_messages":true}"#).unwrap().all_messages);
     }
 
     fn pixel(rgba: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {

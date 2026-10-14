@@ -108,15 +108,23 @@ $toastsOff = [bool]($newLines -match "push shown windows-setting=Disabled")
 if ($newLines -match "push shown windows-setting=Enabled") { Pass "Windows showed the toast (notifications enabled for Pontoon)" }
 elseif ($toastsOff) { Write-Host "SKIP  toast handed to Windows, but this user has notifications turned off: $(@($newLines -match 'push shown')[0])" -ForegroundColor Yellow }
 else { Fail "no toast shown" }
-# A picture of the screen with the badge, for a person to look at.
+# A picture of the taskbar with the badge, for a person to look at.
 try {
   Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-  $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-  $bmp = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-  [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+  # Without this, a scaled display reports logical pixels and the capture misses the taskbar.
+  Add-Type -Namespace Pontoon -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+  [Pontoon.Dpi]::SetProcessDPIAware() | Out-Null
+  $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+  $full = $screen.Bounds; $work = $screen.WorkingArea
+  # The strip below the working area is the taskbar (bottom-docked); keep a little above it.
+  $top = [Math]::Max($full.Top, $work.Bottom - 40)
+  $height = $full.Bottom - $top
+  if ($height -lt 40) { $top = $full.Bottom - 200; $height = 200 }
+  $bmp = New-Object System.Drawing.Bitmap $full.Width, $height
+  [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($full.Left, $top, 0, 0, $bmp.Size)
   $shot = Join-Path $env:TEMP "pontoon-e2e-badge.png"
   $bmp.Save($shot); $bmp.Dispose()
-  Write-Host "      screenshot with the badge: $shot"
+  Write-Host "      screenshot of the taskbar with the badge: $shot ($($full.Width)x$height)"
 } catch { Write-Host "      (no screenshot: $($_.Exception.Message))" }
 if ($newLines -match "^\d+ badge 1$") { Pass "the minimized window got an unread badge on its taskbar button" } else { Fail "no 'badge 1' in the log" }
 if (@($newLines -match "push skipped Duplicate").Count -eq 1) { Pass "a repeated message is not shown twice" } else { Fail "expected one 'push skipped Duplicate'" }

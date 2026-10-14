@@ -333,7 +333,12 @@ fn set_window_badge(window: &WebviewWindow, count: u32) {
             let (rgba, size) = count_badge(count);
             Image::new_owned(rgba, size, size)
         });
-        let _ = window.set_overlay_icon(icon);
+        let result = window.set_overlay_icon(icon);
+        let app = window.app_handle();
+        match result {
+            Ok(()) => log(app, &format!("badge {count}")),
+            Err(e) => log(app, &format!("badge {count} failed {e}")),
+        }
     }
     #[cfg(not(windows))]
     let _ = (window, count);

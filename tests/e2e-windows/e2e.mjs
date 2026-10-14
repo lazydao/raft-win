@@ -252,6 +252,15 @@ if (scenario === "notify") {
   });
 }
 
+if (scenario === "focus") {
+  // Brings the window back the way a toast click does; focusing it clears its badge.
+  const page = await waitForPage((u) => u.startsWith("https://app.raft.build/"));
+  await check("window.focus brings the window back", async () => {
+    const r = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("window_focus", {}));
+    assert.equal(r.method, "window.focus");
+  });
+}
+
 if (scenario === "relaunch") {
   const page = await waitForPage((u) => u.startsWith("https://app.raft.build/"));
   await page.waitForLoadState("load");

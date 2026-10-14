@@ -101,16 +101,34 @@ if ((Run-Node "notify") -eq 0) { Pass "notify scenario" } else { Fail "notify sc
 Start-Sleep -Seconds 2
 $newLines = @(Notify-LogLines | Select-Object -Skip $linesBefore)
 $newLines | ForEach-Object { Write-Host "      log: $_" }
+# Whether Windows displays toasts is the user's own setting (Settings > System >
+# Notifications). When it is off, Pontoon still hands the toast over and shows
+# the taskbar badge; only the display checks are skipped.
+$toastsOff = [bool]($newLines -match "push shown windows-setting=Disabled")
 if ($newLines -match "push shown windows-setting=Enabled") { Pass "Windows showed the toast (notifications enabled for Pontoon)" }
-elseif ($newLines -match "push shown") { Fail "toast sent but Windows has Pontoon's notifications off: $($newLines -match 'push shown')" }
+elseif ($toastsOff) { Write-Host "SKIP  toast handed to Windows, but this user has notifications turned off: $(@($newLines -match 'push shown')[0])" -ForegroundColor Yellow }
 else { Fail "no toast shown" }
-if (@($newLines -match "push skipped Duplicate").Count -eq 1) { Pass "a repeated message is not shown twice" } else { Fail "expected one 'push skipped Duplicate'" }
+# A picture of the screen with the badge, for a person to look at.
 try {
+  Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+  $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+  $bmp = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+  [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+  $shot = Join-Path $env:TEMP "pontoon-e2e-badge.png"
+  $bmp.Save($shot); $bmp.Dispose()
+  Write-Host "      screenshot with the badge: $shot"
+} catch { Write-Host "      (no screenshot: $($_.Exception.Message))" }
+if ($newLines -match "^\d+ badge 1$") { Pass "the minimized window got an unread badge on its taskbar button" } else { Fail "no 'badge 1' in the log" }
+if (@($newLines -match "push skipped Duplicate").Count -eq 1) { Pass "a repeated message is not shown twice" } else { Fail "expected one 'push skipped Duplicate'" }
+if ($toastsOff) { Write-Host "SKIP  notification center check (notifications off)" -ForegroundColor Yellow } else { try {
   [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
   $history = [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory("build.pontoon.desktop")
   if ($history.Count -gt 0) { Pass "toast is in the notification center ($($history.Count) from Pontoon)" } else { Fail "notification center has no Pontoon toast" }
-} catch { Write-Host "      (could not read the notification center: $($_.Exception.Message))" }
+} catch { Write-Host "      (could not read the notification center: $($_.Exception.Message))" } }
 [Pontoon.Show]::ShowWindow($e2eWindow, 9) | Out-Null  # restore
+Run-Node "focus" | Out-Null
+Start-Sleep -Seconds 2
+if ((Notify-LogLines | Select-Object -Skip $linesBefore) -match "^\d+ badge 0$") { Pass "restoring the window clears its badge" } else { Fail "badge not cleared after the window was restored" }
 
 # A second launch passes its arguments to the running app and exits. It
 # waits for the running app to take them, for at most 10 s, so a slow or

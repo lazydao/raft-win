@@ -20,13 +20,16 @@ pub const ENVIRONMENT_ID: &str = "production";
 pub const ENVIRONMENT_GENERATION: u64 = 1;
 pub const PROTOCOL_VERSION: u64 = 1;
 
-/// Per-window document identity issued after each top-level page load.
+/// Per-window document identity: a new one for each document the window
+/// loads, handed to the page once that document has finished loading.
 #[derive(Default, Clone)]
 pub struct DocumentState {
     pub generation: u64,
     pub nonce: String,
     pub handshaken: bool,
     pub server_id: Option<String>,
+    /// The page has been given this identity.
+    pub published: bool,
 }
 
 #[derive(Default)]
@@ -70,20 +73,51 @@ pub fn environment_init_script() -> String {
     )
 }
 
-/// Issue a fresh document identity for `window` and hand it to the page.
-pub fn issue_document_identity(window: &WebviewWindow) {
+/// A new document started loading in `window`: give it a fresh identity, so
+/// calls still in flight from the previous document are refused as stale.
+pub fn begin_document(window: &WebviewWindow) {
+    let state = window.state::<ContractState>();
+    let mut windows = state.windows.lock().unwrap();
+    windows.entry(window.label().to_string()).or_default().renew();
+}
+
+/// The page finished loading: hand it its identity. WebView2 also reports a
+/// finished load when a navigation is blocked, for example an attachment
+/// download sent to the browser, while the same document stays up. That
+/// document already holds its identity, which it cannot replace, so it keeps
+/// it; issuing a new one there would refuse every later call from the page
+/// as stale, and opening a server in a new window would silently do nothing.
+pub fn publish_document_identity(window: &WebviewWindow) {
     let state = window.state::<ContractState>();
     let doc = {
         let mut windows = state.windows.lock().unwrap();
         let entry = windows.entry(window.label().to_string()).or_default();
-        entry.generation += 1;
-        entry.nonce = random_nonce();
-        entry.handshaken = false;
-        entry.server_id = None;
+        if !entry.take_publish() {
+            return;
+        }
         entry.clone()
     };
-    let script = document_identity_script(&doc);
-    let _ = window.eval(&script);
+    let _ = window.eval(document_identity_script(&doc));
+}
+
+impl DocumentState {
+    fn renew(&mut self) {
+        self.generation += 1;
+        self.nonce = random_nonce();
+        self.handshaken = false;
+        self.server_id = None;
+        self.published = false;
+    }
+
+    /// True when the identity still has to be handed to the page; a page that
+    /// finishes loading without a new document having started (the first
+    /// load, if its start was missed) gets one first.
+    fn take_publish(&mut self) -> bool {
+        if self.nonce.is_empty() {
+            self.renew();
+        }
+        !std::mem::replace(&mut self.published, true)
+    }
 }
 
 /// Script run after a top-level load finishes: publishes the document identity
@@ -355,7 +389,7 @@ mod tests {
     }
 
     fn doc() -> DocumentState {
-        DocumentState { generation: 7, nonce: "6edbdb72a0024b13".into(), handshaken: false, server_id: None }
+        DocumentState { generation: 7, nonce: "6edbdb72a0024b13".into(), handshaken: false, server_id: None, published: false }
     }
 
     /// Request params exactly as the web client sends them (`args.params`).
@@ -424,6 +458,27 @@ mod tests {
             });
             std::fs::write(format!("{path}.scripts.json"), scripts.to_string()).unwrap();
         }
+    }
+
+    #[test]
+    fn a_document_keeps_its_identity_until_the_next_one_starts() {
+        let mut d = DocumentState::default();
+        // The first load finishes: an identity is made and handed over once.
+        assert!(d.take_publish());
+        let first = (d.generation, d.nonce.clone());
+        assert!(!first.1.is_empty());
+        // A blocked navigation reports another finished load: same document.
+        assert!(!d.take_publish());
+        assert_eq!((d.generation, d.nonce.clone()), first);
+        // The next document starts: a new identity, handed over when it loads.
+        d.server_id = Some("123e4567-e89b-12d3-a456-426614174000".into());
+        d.handshaken = true;
+        d.renew();
+        assert_eq!(d.generation, first.0 + 1);
+        assert_ne!(d.nonce, first.1);
+        assert!(!d.handshaken && d.server_id.is_none());
+        assert!(d.take_publish());
+        assert!(!d.take_publish());
     }
 
     #[test]

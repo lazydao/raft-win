@@ -24,7 +24,11 @@ pub fn run() {
                 .with_state_flags(StateFlags::all() - StateFlags::VISIBLE)
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
+        // Off: the plugin's own click hook catches target="_blank" links and
+        // asks the page to call plugin:opener|open_url, which app.raft.build
+        // may not call, so chat links did nothing. Those clicks now reach
+        // on_new_window, which opens them from native code.
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .manage(contract::ContractState::default())
         .manage(font::FontState::default())
         .manage(notify::NotifyState::default())

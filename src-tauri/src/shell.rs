@@ -117,9 +117,16 @@ fn is_auth(url: &Url) -> bool {
         && (url.path().starts_with("/login") || url.path().starts_with("/sessions") || url.path().starts_with("/session"))
 }
 
+/// Hands a link to the default browser (or mail app) and records the outcome
+/// in navigation.log.
 fn open_external(app: &AppHandle, url: &Url) {
-    if matches!(url.scheme(), "http" | "https" | "mailto") {
-        let _ = app.opener().open_url(url.as_str(), None::<&str>);
+    if !matches!(url.scheme(), "http" | "https" | "mailto") {
+        log_navigation(app, "dropped", url);
+        return;
+    }
+    match app.opener().open_url(url.as_str(), None::<&str>) {
+        Ok(()) => log_navigation(app, "browser", url),
+        Err(e) => log_navigation(app, &format!("browser-failed[{e}]"), url),
     }
 }
 
@@ -199,6 +206,7 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
             } else {
                 // Links that would open a new tab go to the system browser,
                 // including app.raft.build share links.
+                log_navigation(&popup_app, "new-tab", &url);
                 open_external(&popup_app, &url);
                 NewWindowResponse::Deny
             }

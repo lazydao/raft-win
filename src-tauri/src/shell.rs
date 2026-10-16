@@ -204,9 +204,15 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
             }
         })
         .on_page_load(|window, payload| {
-            if payload.event() == PageLoadEvent::Finished && is_raft(payload.url()) {
-                contract::issue_document_identity(&window);
-                font::sync_window(&window);
+            if !is_raft(payload.url()) {
+                return;
+            }
+            match payload.event() {
+                PageLoadEvent::Started => contract::begin_document(&window),
+                PageLoadEvent::Finished => {
+                    contract::publish_document_identity(&window);
+                    font::sync_window(&window);
+                }
             }
         })
         .build()?;

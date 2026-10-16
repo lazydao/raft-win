@@ -137,6 +137,13 @@ if (scenario === "online") {
     await page.waitForTimeout(3_000);
     assert.ok(page.url().startsWith("https://app.raft.build/"), page.url());
   });
+  await check("a blocked navigation leaves the page's identity valid", async () => {
+    // WebView2 reports the blocked load as finished; the page must still be
+    // able to open server windows afterwards.
+    const d = await page.evaluate(() => window.__RAFT_DESKTOP_DOCUMENT__);
+    const t = await call("window_set_server_title", { documentGeneration: d.generation, documentNonce: d.nonce, title: "E2E check | Raft" });
+    assert.equal(t.status, "ok", JSON.stringify(t));
+  });
 }
 
 // run-e2e.ps1 backs up settings.json before the font scenario and puts it

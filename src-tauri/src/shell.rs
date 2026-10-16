@@ -9,6 +9,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_autostart::ManagerExt as _;
+#[cfg(not(windows))]
 use tauri_plugin_opener::OpenerExt as _;
 
 use crate::contract::{self, FRONTEND_ORIGIN};
@@ -117,9 +118,65 @@ fn is_auth(url: &Url) -> bool {
         && (url.path().starts_with("/login") || url.path().starts_with("/sessions") || url.path().starts_with("/session"))
 }
 
+/// Hands a link to the default browser (or mail app) and records the outcome
+/// in navigation.log. The shell call runs on its own thread: it can block or
+/// pump messages, which must not happen inside a WebView2 event on the UI thread.
 fn open_external(app: &AppHandle, url: &Url) {
-    if matches!(url.scheme(), "http" | "https" | "mailto") {
-        let _ = app.opener().open_url(url.as_str(), None::<&str>);
+    if !matches!(url.scheme(), "http" | "https" | "mailto") {
+        log_navigation(app, "dropped", url);
+        return;
+    }
+    let app = app.clone();
+    let url = url.clone();
+    std::thread::spawn(move || match open_with_system(&app, &url) {
+        Ok(()) => log_navigation(&app, "browser", &url),
+        Err(e) => log_navigation(&app, &format!("browser-failed[{e}]"), &url),
+    });
+}
+
+#[cfg(windows)]
+fn open_with_system(_app: &AppHandle, url: &Url) -> Result<(), String> {
+    match shell_execute(url.as_str()) {
+        Ok(()) => Ok(()),
+        // Explorer hands a URL to the default browser as well.
+        Err(e) => std::process::Command::new("explorer.exe")
+            .arg(url.as_str())
+            .spawn()
+            .map(|_| ())
+            .map_err(|e2| format!("{e}; explorer: {e2}")),
+    }
+}
+
+#[cfg(not(windows))]
+fn open_with_system(app: &AppHandle, url: &Url) -> Result<(), String> {
+    app.opener().open_url(url.as_str(), None::<&str>).map_err(|e| e.to_string())
+}
+
+/// ShellExecuteEx on a COM-initialized thread, waiting until the shell has
+/// handed the URL over, as Windows asks of callers off the UI thread.
+#[cfg(windows)]
+fn shell_execute(target: &str) -> Result<(), String> {
+    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let file = HSTRING::from(target);
+    unsafe {
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+            lpVerb: w!("open"),
+            lpFile: PCWSTR(file.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+        };
+        let result = ShellExecuteExW(&mut info).map_err(|e| e.message());
+        if com.is_ok() {
+            CoUninitialize();
+        }
+        result
     }
 }
 
@@ -199,6 +256,7 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
             } else {
                 // Links that would open a new tab go to the system browser,
                 // including app.raft.build share links.
+                log_navigation(&popup_app, "new-tab", &url);
                 open_external(&popup_app, &url);
                 NewWindowResponse::Deny
             }

@@ -1,6 +1,6 @@
 [package]
 name = "pontoon"
-version = "0.5.2"
+version = "0.5.3"
 description = "Unofficial Windows desktop client for Raft (app.raft.build)"
 edition = "2021"
 license = "MIT"
@@ -26,7 +26,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Graphics_DirectWrite", "Win32_Globalization", "UI_Notifications"] }
+windows = { version = "0.62", features = ["Win32_Graphics_DirectWrite", "Win32_Globalization", "Win32_System_Com", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "UI_Notifications"] }
 windows-registry = "0.6"
 tauri-winrt-notification = "0.8"
 

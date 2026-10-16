@@ -137,6 +137,37 @@ if (scenario === "online") {
     await page.waitForTimeout(3_000);
     assert.ok(page.url().startsWith("https://app.raft.build/"), page.url());
   });
+  await check("a chat link (target=_blank) is handed to the default browser", async () => {
+    // Chat messages render links as <a target="_blank" rel="noopener noreferrer">.
+    // navigation.log keeps only origin and path, so the marker goes in the path.
+    const marker = `pontoon-e2e-link-${Date.now()}`;
+    const href = `https://example.com/${marker}`;
+    const pagesBefore = browser.contexts().flatMap((c) => c.pages()).length;
+    await page.evaluate((href) => {
+      const a = document.createElement("a");
+      a.id = "pontoon-e2e-link";
+      a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = "e2e link";
+      a.style.cssText = "position:fixed;top:4px;left:4px;z-index:2147483647;background:#fff;padding:4px";
+      document.body.append(a);
+    }, href);
+    await page.click("#pontoon-e2e-link");
+    await page.evaluate(() => document.getElementById("pontoon-e2e-link")?.remove());
+    const log = join(process.env.LOCALAPPDATA, "build.pontoon.desktop", "logs", "navigation.log");
+    const end = Date.now() + 15_000;
+    let lines = [];
+    while (Date.now() < end) {
+      lines = readFileSync(log, "utf8").split(/\r?\n/).filter((l) => l.endsWith(href));
+      if (lines.some((l) => / browser(-failed\[.*\])? /.test(l))) break;
+      await page.waitForTimeout(500);
+    }
+    assert.ok(lines.some((l) => l.includes(` new-tab ${href}`)), `no new-tab line: ${JSON.stringify(lines)}`);
+    assert.ok(lines.some((l) => l.includes(` browser ${href}`)), `not handed to the browser: ${JSON.stringify(lines)}`);
+    assert.ok(page.url().startsWith("https://app.raft.build/"), page.url());
+    assert.equal(browser.contexts().flatMap((c) => c.pages()).length, pagesBefore, "the link opened inside Pontoon");
+  });
   await check("a blocked navigation leaves the page's identity valid", async () => {
     // WebView2 reports the blocked load as finished; the page must still be
     // able to open server windows afterwards.

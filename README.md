@@ -72,6 +72,7 @@ Actions 会先检查标签和版本号是否一致，然后编译、测试，把
 | `src-tauri/src/server_window.rs` | 多窗口：协议里可选的 `window.openServer` 扩展打开新的服务器窗口，记录每个窗口所在的服务器，退出时保存、启动时恢复 |
 | `src-tauri/src/shell.rs` | 窗口、托盘、导航策略（哪些链接在窗口内打开，哪些交给浏览器）、联网检查 |
 | `src-tauri/src/font.rs`、`font.js` | 字体设置：读取系统字体列表（含是否等宽）、保存界面/对话/代码三种字体（各分西文和中文），并把它们注入网页 |
+| `src-tauri/src/server_start.js` | 注入到网页里。让每个服务器窗口打开自己的服务器：Raft 网页端不再读取 `raftDesktopServerId`，所以在这个窗口里把"上次所在的服务器"读成窗口自己的服务器；服务器 id 对应的 slug 从 Raft API 取来缓存在本地 |
 | `src-tauri/capabilities/` | 权限范围：app.raft.build 只能调用上面这些命令，字体设置命令只有本地的设置窗口能调用 |
 | `dist/` | 本地的加载页、断网恢复页和字体设置页 |
 

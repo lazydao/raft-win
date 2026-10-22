@@ -11,7 +11,8 @@
     "test:contract": "node tests/run-contract-check.mjs",
     "test:web": "node tests/web-bridge.test.mjs",
     "test:e2e:windows": "powershell -ExecutionPolicy Bypass -File tests/e2e-windows/run-e2e.ps1",
-    "test:font": "node tests/font.test.mjs"
+    "test:font": "node tests/font.test.mjs",
+    "test:start": "node tests/server-start.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.2",

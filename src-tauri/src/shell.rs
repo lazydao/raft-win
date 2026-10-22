@@ -162,9 +162,9 @@ pub fn load_remote(app: AppHandle, window: WebviewWindow) {
     });
 }
 
-/// Where a window loads Raft: its own server when it has one (the web client
-/// reads `raftDesktopServerId` and opens that server's last page), otherwise
-/// the web client's own choice.
+/// Where a window loads Raft: its own server when it has one
+/// (`raftDesktopServerId`, which server_start.js turns into that server's last
+/// page), otherwise the web client's own choice.
 fn start_url(server_id: Option<&str>) -> Url {
     let mut url = Url::parse(&format!("{FRONTEND_ORIGIN}/")).unwrap();
     if let Some(id) = server_id {
@@ -189,6 +189,7 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
         .initialization_script(format!("window.__PONTOON_NOTIFY_PRIMARY__ = {};", label == MAIN_WINDOW))
         .initialization_script(include_str!("notify.js"))
         .initialization_script(include_str!("font.js"))
+        .initialization_script(include_str!("server_start.js"))
         .on_navigation(move |url| {
             if allow_navigation(url) {
                 log_navigation(&nav_app, "in-app", url);

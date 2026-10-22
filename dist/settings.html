@@ -27,6 +27,9 @@
   [role="tab"] { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; text-align: left; border-color: var(--line); }
   [role="tab"][aria-selected="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   [role="tab"] small { color: var(--muted); font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  [role="radiogroup"] { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 8px; padding: 3px; gap: 3px; }
+  [role="radio"] { border: none; padding: 6px 10px; border-radius: 6px; }
+  [role="radio"][aria-checked="true"] { background: var(--accent); color: var(--accent-fg); }
   label.mono { display: flex; align-items: center; gap: 6px; color: var(--muted); }
   label.mono[hidden] { display: none; }
   .actions { display: flex; align-items: center; gap: 8px; }
@@ -42,6 +45,10 @@
     <button type="button" role="tab" id="tab-ui" data-part="ui">界面字体<small></small></button>
     <button type="button" role="tab" id="tab-chat" data-part="chat">对话字体<small></small></button>
     <button type="button" role="tab" id="tab-code" data-part="code">代码字体<small></small></button>
+  </div>
+  <div role="radiogroup" aria-label="设置哪种文字的字体">
+    <button type="button" role="radio" data-lang="latin">西文字体</button>
+    <button type="button" role="radio" data-lang="cjk">中文字体</button>
   </div>
   <p id="hint"></p>
   <input id="search" type="search" placeholder="搜索字体" aria-label="搜索字体" autocomplete="off">
@@ -62,53 +69,80 @@
   var statusEl = document.getElementById("status");
   var monoOnly = document.getElementById("mono-only");
   var PARTS = {
-    ui: { none: "Raft 默认字体", hint: "侧栏、标题、按钮等界面上的文字。",
+    ui: { hint: "侧栏、标题、按钮等界面上的文字。",
+      none: { latin: "Raft 默认字体", cjk: "Raft 默认中文字体" },
       sample: "频道  私信  任务  设置\nThe quick brown fox jumps over the lazy dog." },
-    chat: { none: "跟随界面字体", hint: "聊天消息的正文。不单独设置时跟随界面字体。",
-      sample: "今天下午三点开会，记得带上周报。\nThe quick brown fox jumps over the lazy dog. 0123456789" },
-    code: { none: "Raft 默认等宽字体", hint: "代码块、行内代码和其他等宽文字。",
-      sample: "function greet(name) {\n  return `你好, ${name}!`; // 0O 1lI\n}" },
+    chat: { hint: "聊天消息的正文。不单独设置时跟随界面字体。",
+      none: { latin: "跟随界面字体", cjk: "跟随界面中文字体" },
+      sample: "今天下午三点开会，记得带上 Q3 周报。\nThe quick brown fox jumps over the lazy dog. 0123456789" },
+    code: { hint: "代码块、行内代码和其他等宽文字。代码里的中文不单独设置时跟随对话的中文字体。",
+      none: { latin: "Raft 默认等宽字体", cjk: "跟随对话中文字体" },
+      sample: "function greet(name) {\n  return `你好, ${name}!`; // 打个招呼 0O 1lI\n}" },
   };
+  var LANG_HINT = { latin: "西文字体用于英文、数字和符号。", cjk: "中文字体用于汉字和中文标点，只列出带中文字形的字体。" };
+  var KEYS = ["ui", "chat", "code", "uiCjk", "chatCjk", "codeCjk"];
   var fonts = [];
   var part = "ui";
-  var saved = { ui: null, chat: null, code: null };
-  var chosen = { ui: null, chat: null, code: null };
+  var lang = "latin";
+  var saved = empty();
+  var chosen = empty();
 
+  function empty() { var o = {}; KEYS.forEach(function (k) { o[k] = null; }); return o; }
+  function copy(f) { var o = {}; KEYS.forEach(function (k) { o[k] = (f && f[k]) || null; }); return o; }
+  function key(p, l) { return l === "cjk" ? p + "Cjk" : p; }
   function quote(family, fallback) { return '"' + family + '", ' + fallback; }
   function fallback(p) { return p === "code" ? "monospace" : "sans-serif"; }
   function displayName(family) {
     var f = fonts.filter(function (x) { return x.family === family; })[0];
     return f ? f.display : family;
   }
-  function same(a, b) { return a.ui === b.ui && a.chat === b.chat && a.code === b.code; }
+  function same(a, b) { return KEYS.every(function (k) { return a[k] === b[k]; }); }
+
+  // The fonts a part ends up with, following the same rules as font.js.
+  function effective(p) {
+    var chatCjk = chosen.chatCjk || chosen.uiCjk;
+    if (p === "ui") return { latin: chosen.ui, cjk: chosen.uiCjk };
+    if (p === "chat") return { latin: chosen.chat || chosen.ui, cjk: chatCjk };
+    return { latin: chosen.code, cjk: chosen.codeCjk || chatCjk };
+  }
 
   function renderTabs() {
     document.querySelectorAll('[role="tab"]').forEach(function (tab) {
       var p = tab.dataset.part;
       tab.setAttribute("aria-selected", String(p === part));
-      tab.querySelector("small").textContent = chosen[p] ? displayName(chosen[p]) : PARTS[p].none;
+      var names = ["latin", "cjk"].map(function (l) {
+        var f = chosen[key(p, l)];
+        return f ? displayName(f) : null;
+      }).filter(Boolean);
+      tab.querySelector("small").textContent = names.length ? names.join(" · ") : PARTS[p].none.latin;
     });
-    document.getElementById("hint").textContent = PARTS[part].hint;
-    monoOnly.parentElement.hidden = part !== "code";
+    document.querySelectorAll('[role="radio"]').forEach(function (b) {
+      b.setAttribute("aria-checked", String(b.dataset.lang === lang));
+    });
+    document.getElementById("hint").textContent = PARTS[part].hint + LANG_HINT[lang];
+    monoOnly.parentElement.hidden = !(part === "code" && lang === "latin");
   }
 
   function renderPreview() {
-    var family = chosen[part] || (part === "chat" ? chosen.ui : null);
+    var e = effective(part);
+    var list = [e.latin, e.cjk].filter(Boolean).map(function (f) { return '"' + f + '"'; });
     preview.textContent = PARTS[part].sample;
-    preview.style.fontFamily = family ? quote(family, fallback(part)) : (part === "code" ? "monospace" : "");
+    preview.style.fontFamily = list.length ? list.join(", ") + ", " + fallback(part) : (part === "code" ? "monospace" : "");
   }
 
   function render() {
     var q = document.getElementById("search").value.trim().toLowerCase();
+    var k = key(part, lang);
     list.textContent = "";
-    var rows = [{ family: null, display: PARTS[part].none }].concat(fonts.filter(function (f) {
-      if (part === "code" && monoOnly.checked && !f.mono) return false;
+    var rows = [{ family: null, display: PARTS[part].none[lang] }].concat(fonts.filter(function (f) {
+      if (lang === "cjk" && !f.cjk) return false;
+      if (part === "code" && lang === "latin" && monoOnly.checked && !f.mono) return false;
       return !q || f.display.toLowerCase().indexOf(q) >= 0 || f.family.toLowerCase().indexOf(q) >= 0;
     }));
     rows.forEach(function (f) {
       var li = document.createElement("li");
       li.setAttribute("role", "option");
-      li.setAttribute("aria-selected", String(f.family === chosen[part]));
+      li.setAttribute("aria-selected", String(f.family === chosen[k]));
       li.dataset.family = f.family || "";
       var name = document.createElement("span");
       name.textContent = f.display;
@@ -127,13 +161,14 @@
   }
 
   function select(family) {
-    chosen[part] = family;
+    chosen[key(part, lang)] = family;
     statusEl.textContent = same(chosen, saved) ? "" : "未应用";
     render();
   }
 
-  function showPart(p) {
+  function show(p, l) {
     part = p;
+    lang = l;
     document.getElementById("search").value = "";
     render();
     var current = list.querySelector('[aria-selected="true"]');
@@ -141,12 +176,15 @@
   }
 
   document.querySelectorAll('[role="tab"]').forEach(function (tab) {
-    tab.addEventListener("click", function () { showPart(tab.dataset.part); });
+    tab.addEventListener("click", function () { show(tab.dataset.part, lang); });
+  });
+  document.querySelectorAll('[role="radio"]').forEach(function (b) {
+    b.addEventListener("click", function () { show(part, b.dataset.lang); });
   });
   document.getElementById("search").addEventListener("input", render);
   monoOnly.addEventListener("change", render);
   document.getElementById("apply").addEventListener("click", function () {
-    var fontsToSave = { ui: chosen.ui, chat: chosen.chat, code: chosen.code };
+    var fontsToSave = copy(chosen);
     invoke("font_set", { fonts: fontsToSave }).then(function () {
       saved = fontsToSave;
       statusEl.textContent = "已应用";
@@ -155,10 +193,9 @@
 
   Promise.all([invoke("font_list", {}), invoke("font_get", {})]).then(function (r) {
     fonts = r[0] || [];
-    var f = r[1] || {};
-    saved = { ui: f.ui || null, chat: f.chat || null, code: f.code || null };
-    chosen = { ui: saved.ui, chat: saved.chat, code: saved.code };
-    showPart("ui");
+    saved = copy(r[1]);
+    chosen = copy(saved);
+    show("ui", "latin");
     statusEl.textContent = "";
   }, function (e) { list.textContent = ""; statusEl.textContent = "读取字体失败：" + e; });
 })();

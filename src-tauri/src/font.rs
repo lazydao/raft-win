@@ -1,6 +1,9 @@
 //! Font settings: the user picks installed font families for three parts of
-//! Raft: the interface, chat messages and code. Each one left unset keeps
-//! Raft's own font, and the chat font follows the interface font when unset.
+//! Raft: the interface, chat messages and code. Each part has a Latin font
+//! and a Chinese (CJK) font, so English and Chinese text can use different
+//! families. Each one left unset keeps Raft's own font; the chat fonts follow
+//! the interface fonts when unset, and Chinese in code follows the chat's
+//! Chinese font.
 //!
 //! The choice lives in settings.json in the app's config folder. font.js
 //! applies it at document start from localStorage, and the native side
@@ -18,8 +21,13 @@ pub const SETTINGS_WINDOW: &str = "settings";
 pub const SETTINGS_ARG: &str = "--font-settings";
 const SETTINGS_FILE: &str = "settings.json";
 
-/// The chosen family for each part; `None` keeps Raft's own font.
+/// The chosen family for each part; `None` keeps Raft's own font. `ui`,
+/// `chat` and `code` come first in the font list, so they draw Latin text
+/// (and everything else they cover); the `*_cjk` fonts draw the Chinese text
+/// the first ones have no glyphs for. Settings from before 0.6 have only the
+/// first three, which keeps them looking the same.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Fonts {
     #[serde(default)]
     pub ui: Option<String>,
@@ -27,11 +35,19 @@ pub struct Fonts {
     pub chat: Option<String>,
     #[serde(default)]
     pub code: Option<String>,
+    #[serde(default)]
+    pub ui_cjk: Option<String>,
+    #[serde(default)]
+    pub chat_cjk: Option<String>,
+    #[serde(default)]
+    pub code_cjk: Option<String>,
 }
 
 impl Fonts {
     fn is_valid(&self) -> bool {
-        [&self.ui, &self.chat, &self.code].iter().all(|f| f.as_deref().map_or(true, is_valid_font_family))
+        [&self.ui, &self.chat, &self.code, &self.ui_cjk, &self.chat_cjk, &self.code_cjk]
+            .iter()
+            .all(|f| f.as_deref().map_or(true, is_valid_font_family))
     }
 }
 
@@ -61,6 +77,8 @@ pub struct InstalledFont {
     pub display: String,
     /// Every character has the same width, which suits code.
     pub mono: bool,
+    /// Has Chinese characters, so it can be the Chinese font.
+    pub cjk: bool,
 }
 
 /// Font family names go into CSS, so only plain names are accepted: letters
@@ -122,7 +140,7 @@ pub fn open_settings(app: &AppHandle) -> tauri::Result<()> {
     }
     let w = WebviewWindowBuilder::new(app, SETTINGS_WINDOW, WebviewUrl::App("settings.html".into()))
         .title("字体设置 · Pontoon")
-        .inner_size(480.0, 640.0)
+        .inner_size(480.0, 680.0)
         .min_inner_size(400.0, 480.0)
         .build()?;
     shell::show_window(&w);
@@ -199,12 +217,19 @@ fn system_fonts() -> Vec<InstalledFont> {
             let Ok(names) = family.GetFamilyNames() else { continue };
             let english = find(&names, w!("en-us")).unwrap_or(0);
             let shown = user_locale.and_then(|l| find(&names, l)).unwrap_or(english);
-            let mono = family
-                .GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL)
-                .and_then(|f| f.cast::<IDWriteFont1>())
-                .is_ok_and(|f| f.IsMonospacedFont().as_bool());
+            let font =
+                family.GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL);
+            let mono = font
+                .as_ref()
+                .ok()
+                .and_then(|f| f.cast::<IDWriteFont1>().ok())
+                .is_some_and(|f| f.IsMonospacedFont().as_bool());
+            // 中 and 文: a font with both is taken to cover Chinese.
+            let cjk = font.as_ref().is_ok_and(|f| {
+                [0x4E2D, 0x6587].iter().all(|&c| f.HasCharacter(c).is_ok_and(|has| has.as_bool()))
+            });
             if let (Some(family), Some(display)) = (name_at(&names, english), name_at(&names, shown)) {
-                out.push(InstalledFont { family, display, mono });
+                out.push(InstalledFont { family, display, mono, cjk });
             }
         }
     }
@@ -236,10 +261,16 @@ mod tests {
 
     #[test]
     fn apply_script_passes_json() {
-        let fonts = Fonts { ui: Some("微软雅黑".into()), chat: None, code: Some("Consolas".into()) };
+        let fonts = Fonts {
+            ui: Some("Segoe UI".into()),
+            code: Some("Consolas".into()),
+            ui_cjk: Some("微软雅黑".into()),
+            ..Fonts::default()
+        };
         assert_eq!(
             apply_script(&fonts),
-            "window.__pontoonSetFont && window.__pontoonSetFont({\"ui\":\"微软雅黑\",\"chat\":null,\"code\":\"Consolas\"});"
+            "window.__pontoonSetFont && window.__pontoonSetFont({\"ui\":\"Segoe UI\",\"chat\":null,\"code\":\"Consolas\",\
+             \"uiCjk\":\"微软雅黑\",\"chatCjk\":null,\"codeCjk\":null});"
         );
     }
 
@@ -248,6 +279,7 @@ mod tests {
         assert!(Fonts::default().is_valid());
         assert!(!Fonts { code: Some("x\"}".into()), ..Fonts::default() }.is_valid());
         assert!(!Fonts { chat: Some(" a".into()), ..Fonts::default() }.is_valid());
+        assert!(!Fonts { chat_cjk: Some("a</style>".into()), ..Fonts::default() }.is_valid());
     }
 
     #[test]
@@ -255,7 +287,12 @@ mod tests {
         let old: Settings = serde_json::from_str(r#"{"fontFamily":"KaiTi"}"#).unwrap();
         assert_eq!(old.fonts(), Fonts { ui: Some("KaiTi".into()), ..Fonts::default() });
         let new: Settings = serde_json::from_str(r#"{"fonts":{"ui":null,"chat":"SimSun","code":"Consolas"}}"#).unwrap();
-        assert_eq!(new.fonts(), Fonts { ui: None, chat: Some("SimSun".into()), code: Some("Consolas".into()) });
+        assert_eq!(new.fonts(), Fonts { chat: Some("SimSun".into()), code: Some("Consolas".into()), ..Fonts::default() });
+        let cjk: Settings = serde_json::from_str(r#"{"fonts":{"ui":"Segoe UI","codeCjk":"Sarasa Mono SC"}}"#).unwrap();
+        assert_eq!(
+            cjk.fonts(),
+            Fonts { ui: Some("Segoe UI".into()), code_cjk: Some("Sarasa Mono SC".into()), ..Fonts::default() }
+        );
         let saved = serde_json::to_string(&Settings { fonts: Some(Fonts::default()), legacy_font_family: Some("x".into()) }).unwrap();
         assert!(!saved.contains("fontFamily"), "{saved}");
     }

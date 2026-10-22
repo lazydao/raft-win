@@ -1,50 +1,66 @@
 // Pontoon font settings. Runs at document start in every page of the main
-// window. Three families can be chosen: the interface font, the chat font
-// (message text, which Raft renders inside [data-raft-markdown-content]) and
-// the code font. An unset chat font follows the interface font; anything
-// else unset keeps Raft's own font. The native side calls
+// window. Three parts get their own fonts: the interface, the chat (message
+// text, which Raft renders inside [data-raft-markdown-content]) and code.
+// Each part has a Latin font and a Chinese (CJK) font. Unset chat fonts
+// follow the interface fonts, Chinese in code follows the chat's Chinese
+// font, and anything else unset keeps Raft's own font. The native side calls
 // window.__pontoonSetFont after every Raft page load and whenever the choice
 // changes; localStorage carries the choice to the next page load so text
 // doesn't flash in the old font first.
 (() => {
   const KEY = "pontoon.fonts";
   const STYLE_ID = "pontoon-font";
+  const PARTS = ["ui", "chat", "code", "uiCjk", "chatCjk", "codeCjk"];
   // Same rule as font.rs: plain names only, since the names go into CSS.
   const VALID = /^[\p{L}\p{N} ._&+-]{1,64}$/u;
   const valid = (f) => typeof f === "string" && VALID.test(f) && f.trim() === f;
   const clean = (fonts) => {
     const f = fonts && typeof fonts === "object" ? fonts : {};
-    return {
-      ui: valid(f.ui) ? f.ui : null,
-      chat: valid(f.chat) ? f.chat : null,
-      code: valid(f.code) ? f.code : null,
-    };
+    return Object.fromEntries(PARTS.map((p) => [p, valid(f[p]) ? f[p] : null]));
   };
+
+  // Raft's own fonts (raft-ui fonts.css), for the half of a part that is
+  // left unset while the other half is chosen.
+  const RAFT_LATIN = '"Space Grotesk"';
+  const RAFT_CJK = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC"';
+  const RAFT_MONO = '"Space Mono"';
 
   const CODE = "code, pre, kbd, samp, .font-mono";
   const IN_CODE = `${CODE}, :is(${CODE}) *`;
   const CHAT = "[data-raft-markdown-content]";
 
-  function css({ ui, chat, code }) {
+  // The browser takes each character from the first font in the list that
+  // has it. Latin fonts have no Chinese characters, so putting the Latin
+  // font first and the Chinese font second splits text between the two.
+  function stack(latin, cjk, raftLatin, raftCjk, generic) {
+    if (!latin && !cjk) return null;
+    const list = [latin ? `"${latin}"` : raftLatin];
+    if (cjk) list.push(`"${cjk}"`);
+    else if (raftCjk) list.push(raftCjk);
+    return `${list.join(", ")}, ${generic}`;
+  }
+
+  function css(f) {
     const rules = [];
-    chat = chat || ui;
+    const ui = stack(f.ui, f.uiCjk, RAFT_LATIN, RAFT_CJK, "sans-serif");
+    const chatCjk = f.chatCjk || f.uiCjk;
+    const chat = stack(f.chat || f.ui, chatCjk, RAFT_LATIN, RAFT_CJK, "sans-serif");
+    const code = stack(f.code, f.codeCjk || chatCjk, RAFT_MONO, null, "monospace");
     if (ui) {
-      const f = `"${ui}", sans-serif`;
       rules.push(
-        `:root{--font-sans:${f}!important;--sans-font:${f}!important;` +
-          `--font-heading:${f}!important;--heading-font:${f}!important;--font-display:${f}!important}`,
-        `html body,html body *:not(${IN_CODE}){font-family:${f}!important}`,
+        `:root{--font-sans:${ui}!important;--sans-font:${ui}!important;` +
+          `--font-heading:${ui}!important;--heading-font:${ui}!important;--font-display:${ui}!important}`,
+        `html body,html body *:not(${IN_CODE}){font-family:${ui}!important}`,
       );
     }
     if (chat) {
       // Higher specificity than the interface rule, so it wins inside messages.
-      rules.push(`html body ${CHAT},html body ${CHAT} *:not(${IN_CODE}){font-family:"${chat}", sans-serif!important}`);
+      rules.push(`html body ${CHAT},html body ${CHAT} *:not(${IN_CODE}){font-family:${chat}!important}`);
     }
     if (code) {
-      const f = `"${code}", monospace`;
       rules.push(
-        `:root{--font-mono:${f}!important;--mono-font:${f}!important}`,
-        `html body :is(${CODE}),html body :is(${CODE}) *{font-family:${f}!important}`,
+        `:root{--font-mono:${code}!important;--mono-font:${code}!important}`,
+        `html body :is(${CODE}),html body :is(${CODE}) *{font-family:${code}!important}`,
       );
     }
     return rules.join("\n");
@@ -83,7 +99,7 @@
     value: (fonts) => {
       const f = clean(fonts);
       try {
-        if (f.ui || f.chat || f.code) localStorage.setItem(KEY, JSON.stringify(f));
+        if (PARTS.some((p) => f[p])) localStorage.setItem(KEY, JSON.stringify(f));
         else localStorage.removeItem(KEY);
         localStorage.removeItem("pontoon.fontFamily"); // version 0.2
       } catch {}

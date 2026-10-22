@@ -1,16 +1,19 @@
 //! Several server windows at once, all signed in to the same account.
 //!
-//! The web client asks for a new window through the contract's optional
-//! `window.openServer` extension when you Ctrl-, Shift- or middle-click a
-//! server in its server switcher. Each window then binds to its own server, so
-//! its socket delivers that server's messages and notifications. The main
-//! window hides to the tray when closed; the others close for real. The
-//! servers open at quit are reopened at the next start.
+//! Ctrl- or middle-clicking a server in the web client's server switcher opens
+//! it in a window of its own. Raft 1.21.28 does this as a plain link to the
+//! server's page, which [`show_url`] turns into a Pontoon window; older
+//! versions used the contract's optional `window.openServer` extension, which
+//! still works. Each window is bound to the server it shows (raft_shim.js
+//! reports it, as the web client itself used to), so Pontoon can focus it and
+//! route that server's notifications to it. The main window hides to the tray
+//! when closed; the others close for real. The servers open at quit are
+//! reopened at the next start.
 
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, Url, WebviewWindow};
 
 use crate::contract::{is_canonical_uuid, ContractState};
 use crate::shell;
@@ -126,6 +129,102 @@ pub fn open(app: &AppHandle, server_id: &str, visible: bool) -> tauri::Result<We
     Ok(window)
 }
 
+/// Where a window opened by [`show_url`] loads first, by label. Taken once.
+static START_URLS: Mutex<Vec<(String, Url)>> = Mutex::new(Vec::new());
+
+/// The URL a new window should load first instead of its server's start page.
+pub fn take_start_url(label: &str) -> Option<Url> {
+    let mut urls = START_URLS.lock().unwrap();
+    let i = urls.iter().position(|(l, _)| l == label)?;
+    Some(urls.remove(i).1)
+}
+
+/// The server a Raft page is on: the slug in `https://app.raft.build/s/<slug>/…`.
+pub fn slug_of(url: &Url) -> Option<String> {
+    if url.scheme() != "https" || url.host_str() != Some("app.raft.build") {
+        return None;
+    }
+    let mut parts = url.path_segments()?;
+    if parts.next() != Some("s") {
+        return None;
+    }
+    let slug = percent_decode(parts.next()?)?;
+    (!slug.is_empty() && slug.chars().count() <= 100 && !slug.chars().any(char::is_control)).then_some(slug)
+}
+
+fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The server window whose page is on `slug` now, the main one first.
+fn find_showing(app: &AppHandle, slug: &str) -> Option<WebviewWindow> {
+    all(app).into_iter().find(|w| w.url().ok().and_then(|u| slug_of(&u)).as_deref() == Some(slug))
+}
+
+/// A label for a new window opened on a link. Labels may hold only ASCII
+/// letters, digits and `-_`, so other characters of the slug are dropped.
+fn label_for_slug(app: &AppHandle, slug: &str) -> String {
+    let clean: String = slug
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(60)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let base = format!("server-s-{}", if clean.is_empty() { "raft" } else { &clean });
+    let mut label = base.clone();
+    let mut n = 2;
+    while app.get_webview_window(&label).is_some() {
+        label = format!("{base}-{n}");
+        n += 1;
+    }
+    label
+}
+
+/// Shows a Raft server page asked for in a new window: the window already on
+/// that server comes to the front (and goes to the page, when the link points
+/// at something in particular, like a message), otherwise a new window opens
+/// on the page. Called from the new-window handler, which runs on the main
+/// thread, where creating a window deadlocks on Windows; so it works from
+/// another thread.
+pub fn show_url_from_handler(app: &AppHandle, url: Url) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _ = show_url(&app, url);
+    });
+}
+
+fn show_url(app: &AppHandle, url: Url) -> tauri::Result<()> {
+    let Some(slug) = slug_of(&url) else { return Ok(()) };
+    if let Some(existing) = find_showing(app, &slug) {
+        if url.query().is_some() || url.fragment().is_some() {
+            existing.navigate(url)?;
+        }
+        shell::show_window(&existing);
+        return Ok(());
+    }
+    let label = label_for_slug(app, &slug);
+    START_URLS.lock().unwrap().push((label.clone(), url));
+    if let Err(e) = shell::create_server_window(app, &label, true) {
+        take_start_url(&label);
+        return Err(e);
+    }
+    shell::refresh_tray(app);
+    Ok(())
+}
+
 fn state_path(app: &AppHandle) -> Option<std::path::PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join(STATE_FILE))
 }
@@ -197,6 +296,21 @@ mod tests {
         let many: Vec<String> = (0..40).map(|i| format!("{i:08x}-e89b-12d3-a456-426614174000")).collect();
         let s = parse(serde_json::to_string(&Saved { main: None, extra: many }).unwrap().as_bytes());
         assert_eq!(s.extra.len(), 16);
+    }
+
+    #[test]
+    fn server_pages_name_their_server() {
+        let slug = |s: &str| slug_of(&Url::parse(s).unwrap());
+        assert_eq!(slug("https://app.raft.build/s/acme/channel/1?msg=2").as_deref(), Some("acme"));
+        assert_eq!(slug("https://app.raft.build/s/will-game-studio").as_deref(), Some("will-game-studio"));
+        assert_eq!(slug("https://app.raft.build/s/%E5%B0%8F%E7%BB%84/").as_deref(), Some("小组"));
+        assert_eq!(slug("https://app.raft.build/"), None);
+        assert_eq!(slug("https://app.raft.build/s/"), None);
+        assert_eq!(slug("https://app.raft.build/invite/abc"), None);
+        assert_eq!(slug("https://example.com/s/acme"), None);
+        assert_eq!(slug("http://app.raft.build/s/acme"), None);
+        assert_eq!(slug("https://app.raft.build/s/a%0Ab"), None);
+        assert_eq!(slug("https://app.raft.build/s/a%ZZ"), None);
     }
 
     #[test]

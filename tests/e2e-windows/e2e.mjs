@@ -391,7 +391,9 @@ const identity = async (page) => {
   await page.waitForFunction(() => !!window.__RAFT_DESKTOP_DOCUMENT__, null, { timeout: 30_000 });
   return page.evaluate(() => window.__RAFT_DESKTOP_DOCUMENT__);
 };
+// The page title too, since raft_shim.js makes the window title follow it.
 const setTitle = async (page, title) => {
+  await page.evaluate((t) => { document.title = t; }, title);
   const d = await identity(page);
   const r = await invokeIn(page, "window_set_server_title", { documentGeneration: d.generation, documentNonce: d.nonce, title });
   assert.equal(r.status, "ok", JSON.stringify(r));
@@ -413,11 +415,11 @@ if (scenario === "multiwindow") {
     console.log("  ..   only one server on this account; skipping the second-window checks");
   } else {
     let second;
-    await check(`window.openServer opens ${target.slug} in a new window`, async () => {
-      const d = await identity(main);
-      const r = await invokeIn(main, "window_open_server", { serverId: target.id, documentGeneration: d.generation, documentNonce: d.nonce });
-      assert.equal(r.status, "ok", JSON.stringify(r));
-      assert.equal(r.result.disposition, "opened");
+    // Raft 1.21.28 opens a server in a new window as a plain link
+    // (middle-click runs window.open, Ctrl-click follows the link).
+    const openLink = (page, url) => page.evaluate((u) => { window.open(u, "_blank", "noopener,noreferrer"); }, url);
+    await check(`a link to ${target.slug} opens it in a new window`, async () => {
+      await openLink(main, `https://app.raft.build/s/${target.slug}`);
       second = await waitForPage((u) => u.startsWith(`https://app.raft.build/s/${target.slug}`), 90_000);
     });
     await check("the new window completes the desktop handshake, signed in", async () => {
@@ -428,6 +430,18 @@ if (scenario === "multiwindow") {
     });
     await check("the first window stays on its own server", async () => {
       if (currentSlug) assert.ok(new URL(main.url()).pathname.startsWith(`/s/${currentSlug}`), main.url());
+    });
+    await check("the new window is bound to its server", async () => {
+      // raft_shim.js binds it once the page is on the server.
+      await second.waitForFunction((id) => JSON.parse(localStorage.getItem("pontoon.servers") || "[]").some((s) => s.id === id),
+        target.id.toLowerCase(), { timeout: 30_000 });
+      await second.waitForTimeout(2_000);
+    });
+    await check("a link to the same server again focuses the existing window", async () => {
+      const before = appPages().length;
+      await openLink(main, `https://app.raft.build/s/${target.slug}`);
+      await main.waitForTimeout(3_000);
+      assert.equal(appPages().length, before);
     });
     await check("opening the same server again focuses the existing window", async () => {
       const before = appPages().length;

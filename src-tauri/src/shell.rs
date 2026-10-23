@@ -154,7 +154,8 @@ pub fn load_remote(app: AppHandle, window: WebviewWindow) {
             Err(_) => false,
         };
         let target = if reachable {
-            start_url(server_window::home(&app, window.label()).as_deref())
+            server_window::take_start_url(window.label())
+                .unwrap_or_else(|| start_url(server_window::home(&app, window.label()).as_deref()))
         } else {
             local_url("recovery.html")
         };
@@ -162,9 +163,9 @@ pub fn load_remote(app: AppHandle, window: WebviewWindow) {
     });
 }
 
-/// Where a window loads Raft: its own server when it has one (the web client
-/// reads `raftDesktopServerId` and opens that server's last page), otherwise
-/// the web client's own choice.
+/// Where a window loads Raft: its own server when it has one
+/// (`raftDesktopServerId`, which raft_shim.js turns into that server's last
+/// page), otherwise the web client's own choice.
 fn start_url(server_id: Option<&str>) -> Url {
     let mut url = Url::parse(&format!("{FRONTEND_ORIGIN}/")).unwrap();
     if let Some(id) = server_id {
@@ -189,6 +190,7 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
         .initialization_script(format!("window.__PONTOON_NOTIFY_PRIMARY__ = {};", label == MAIN_WINDOW))
         .initialization_script(include_str!("notify.js"))
         .initialization_script(include_str!("font.js"))
+        .initialization_script(include_str!("raft_shim.js"))
         .on_navigation(move |url| {
             if allow_navigation(url) {
                 log_navigation(&nav_app, "in-app", url);
@@ -203,6 +205,13 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
             if is_auth(&url) || (in_sign_in_flow() && is_provider_domain(&url)) {
                 log_navigation(&popup_app, "popup", &url);
                 NewWindowResponse::Allow
+            } else if server_window::slug_of(&url).is_some() {
+                // A Raft server page asked for in a new window (Ctrl- or
+                // middle-click in the server switcher, or a link to a
+                // message): show it in a Pontoon window of its own.
+                log_navigation(&popup_app, "server-window", &url);
+                server_window::show_url_from_handler(&popup_app, url);
+                NewWindowResponse::Deny
             } else {
                 // Links that would open a new tab go to the system browser,
                 // including app.raft.build share links.

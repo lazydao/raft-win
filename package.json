@@ -1,7 +1,7 @@
 {
   "name": "pontoon",
   "private": true,
-  "version": "0.5.3",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
@@ -10,7 +10,9 @@
     "test:rust": "cd src-tauri && cargo test",
     "test:contract": "node tests/run-contract-check.mjs",
     "test:web": "node tests/web-bridge.test.mjs",
-    "test:e2e:windows": "powershell -ExecutionPolicy Bypass -File tests/e2e-windows/run-e2e.ps1"
+    "test:e2e:windows": "powershell -ExecutionPolicy Bypass -File tests/e2e-windows/run-e2e.ps1",
+    "test:font": "node tests/font.test.mjs",
+    "test:shim": "node tests/raft-shim.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.2",

@@ -180,7 +180,14 @@ if (scenario === "online") {
 // run-e2e.ps1 backs up settings.json before the font scenario and puts it
 // back byte for byte at the end, so these scenarios may change the fonts.
 // Fonts every Chinese Windows install has, and that look clearly different.
-const TEST = { ui: "KaiTi", chat: "SimSun", code: "Courier New" };
+// The Latin ones have no Chinese characters, so Chinese text has to come
+// from the Chinese ones.
+const TEST = {
+  ui: "Georgia", chat: "Times New Roman", code: "Courier New",
+  uiCjk: "KaiTi", chatCjk: "FangSong", codeCjk: "SimSun",
+};
+// The names Windows may report for the Chinese fonts instead.
+const LOCAL_NAME = { KaiTi: "楷体", FangSong: "仿宋", SimSun: "宋体" };
 
 // A message-like element and a code element inside Raft's own markdown
 // container, so the checks don't depend on what the open channel shows.
@@ -189,7 +196,9 @@ const fontsOnPage = (page) => page.evaluate(() => {
   if (!probe) {
     probe = document.createElement("div");
     probe.id = "pontoon-e2e-probe";
-    probe.innerHTML = '<div data-raft-markdown-content style="display:contents"><p id="pontoon-e2e-msg">hi <code id="pontoon-e2e-code">x</code></p></div>';
+    probe.innerHTML = '<span id="pontoon-e2e-ui-cjk">设置</span><div data-raft-markdown-content style="display:contents">'
+      + '<p id="pontoon-e2e-msg"><span id="pontoon-e2e-msg-latin">hi</span> <code id="pontoon-e2e-code">x</code></p><p id="pontoon-e2e-msg-cjk">你好</p>'
+      + '<code id="pontoon-e2e-code-cjk">中文注释</code></div>';
     document.getElementById("root").appendChild(probe);
   }
   const ui = [...document.querySelectorAll("#root *")].find((e) => e.childElementCount === 0 && e.textContent.trim()
@@ -198,6 +207,22 @@ const fontsOnPage = (page) => page.evaluate(() => {
   return { ui: f(ui), chat: f(document.getElementById("pontoon-e2e-msg")), code: f(document.getElementById("pontoon-e2e-code")) };
 });
 const uses = (actual, family) => actual.replace(/"/g, "").startsWith(family);
+// The fonts Chromium actually drew an element's text with, as DevTools shows
+// them, so a Chinese font listed second is seen to draw the Chinese text.
+const drawnWith = async (page, selector) => {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("DOM.enable");
+    await cdp.send("CSS.enable");
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+    const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
+    return fonts.map((f) => f.familyName);
+  } finally {
+    await cdp.detach().catch(() => {});
+  }
+};
+const drawnIn = (drawn, family) => drawn.length > 0 && drawn.every((f) => f === family || f === LOCAL_NAME[family]);
 
 if (scenario === "font") {
   const settings = await waitForPage((u) => u.endsWith("/settings.html"), 30_000);
@@ -223,12 +248,23 @@ if (scenario === "font") {
   await check("current choice is readable", async () => {
     const r = await invoke(settings, "font_get", {});
     assert.ok(!r.error, r.error);
-    assert.deepEqual(Object.keys(r.value).sort(), ["chat", "code", "ui"]);
+    assert.deepEqual(Object.keys(r.value).sort(), ["chat", "chatCjk", "code", "codeCjk", "ui", "uiCjk"]);
+  });
+  await check("Chinese font list holds only fonts with Chinese characters", async () => {
+    await settings.getByRole("tab", { name: /界面字体/ }).click();
+    await settings.getByRole("radio", { name: "中文字体" }).click();
+    const families = await settings.$$eval("#list li", (els) => els.map((e) => e.dataset.family).filter(Boolean));
+    for (const f of ["Microsoft YaHei", TEST.uiCjk, TEST.chatCjk, TEST.codeCjk]) assert.ok(families.includes(f), `${f} missing`);
+    for (const f of [TEST.ui, TEST.chat, TEST.code, "Consolas"]) assert.ok(!families.includes(f), `${f} listed as Chinese`);
+    await settings.getByRole("radio", { name: "西文字体" }).click();
   });
   await check("interface, chat and code fonts apply separately", async () => {
     for (const [part, tab] of [["ui", "界面字体"], ["chat", "对话字体"], ["code", "代码字体"]]) {
       await settings.getByRole("tab", { name: new RegExp(tab) }).click();
+      await settings.getByRole("radio", { name: "西文字体" }).click();
       await settings.locator(`#list li[data-family="${TEST[part]}"]`).click();
+      await settings.getByRole("radio", { name: "中文字体" }).click();
+      await settings.locator(`#list li[data-family="${TEST[part + "Cjk"]}"]`).click();
     }
     await settings.getByRole("button", { name: "应用" }).click();
     await settings.locator("#status", { hasText: "已应用" }).waitFor({ timeout: 10_000 });
@@ -237,6 +273,15 @@ if (scenario === "font") {
     assert.ok(uses(f.ui, TEST.ui), `interface text uses ${f.ui}`);
     assert.ok(uses(f.chat, TEST.chat), `chat text uses ${f.chat}`);
     assert.ok(uses(f.code, TEST.code), `code uses ${f.code}`);
+  });
+  await check("Latin and Chinese text are drawn with their own fonts", async () => {
+    const drawn = {};
+    for (const [name, sel] of [["chat", "#pontoon-e2e-msg-latin"], ["chatCjk", "#pontoon-e2e-msg-cjk"], ["uiCjk", "#pontoon-e2e-ui-cjk"],
+      ["code", "#pontoon-e2e-code"], ["codeCjk", "#pontoon-e2e-code-cjk"]]) {
+      drawn[name] = await drawnWith(main, sel);
+    }
+    console.log(`  ..   drawn with ${JSON.stringify(drawn)}`);
+    for (const name of Object.keys(drawn)) assert.ok(drawnIn(drawn[name], TEST[name]), `${name} drawn with ${drawn[name]}`);
   });
   await check("a real message in the open channel uses the chat font", async () => {
     const f = await main.evaluate(() => {
@@ -248,12 +293,14 @@ if (scenario === "font") {
     else assert.ok(uses(f, TEST.chat), f);
   });
   await check("unset chat font follows the interface font", async () => {
-    const r = await invoke(settings, "font_set", { fonts: { ui: TEST.ui, chat: null, code: null } });
+    const r = await invoke(settings, "font_set", { fonts: { ui: TEST.ui, uiCjk: TEST.uiCjk, chat: null, code: TEST.code } });
     assert.ok(!r.error, r.error);
     await main.waitForTimeout(500);
     const f = await fontsOnPage(main);
     assert.ok(uses(f.chat, TEST.ui), `chat text uses ${f.chat}`);
     assert.ok(!uses(f.code, TEST.ui), `code uses ${f.code}`);
+    assert.ok(drawnIn(await drawnWith(main, "#pontoon-e2e-msg-cjk"), TEST.uiCjk), "chat Chinese does not follow the interface");
+    assert.ok(drawnIn(await drawnWith(main, "#pontoon-e2e-code-cjk"), TEST.uiCjk), "code Chinese does not follow the chat");
   });
   await check("fonts survive a reload", async () => {
     const r = await invoke(settings, "font_set", { fonts: TEST });
@@ -265,12 +312,14 @@ if (scenario === "font") {
     assert.ok(uses(f.ui, TEST.ui) && uses(f.chat, TEST.chat) && uses(f.code, TEST.code), JSON.stringify(f));
   });
   await check("app.raft.build cannot change the fonts", async () => {
-    const r = await invoke(main, "font_set", { fonts: { ui: "Arial", chat: null, code: null } });
+    const r = await invoke(main, "font_set", { fonts: { ui: "Arial" } });
     assert.ok(r.error, "font_set from the remote page should be denied");
   });
   await check("unsafe font names are rejected", async () => {
-    const r = await invoke(settings, "font_set", { fonts: { ui: TEST.ui, chat: null, code: 'x"} body{display:none' } });
+    let r = await invoke(settings, "font_set", { fonts: { ...TEST, code: 'x"} body{display:none' } });
     assert.ok(r.error, "an unsafe name was accepted");
+    r = await invoke(settings, "font_set", { fonts: { ...TEST, chatCjk: "x</style>" } });
+    assert.ok(r.error, "an unsafe Chinese font name was accepted");
     assert.ok(uses((await fontsOnPage(main)).code, TEST.code));
   });
 }
@@ -325,6 +374,7 @@ if (scenario === "relaunch") {
     await page.waitForFunction(() => document.getElementById("root")?.childElementCount > 0, null, { timeout: 30_000 });
     const f = await fontsOnPage(page);
     assert.ok(uses(f.ui, TEST.ui) && uses(f.chat, TEST.chat) && uses(f.code, TEST.code), JSON.stringify(f));
+    assert.ok(drawnIn(await drawnWith(page, "#pontoon-e2e-msg-cjk"), TEST.chatCjk), "chat Chinese font lost on restart");
   });
   await page.evaluate(() => document.getElementById("pontoon-e2e-probe")?.remove());
 }
@@ -341,7 +391,9 @@ const identity = async (page) => {
   await page.waitForFunction(() => !!window.__RAFT_DESKTOP_DOCUMENT__, null, { timeout: 30_000 });
   return page.evaluate(() => window.__RAFT_DESKTOP_DOCUMENT__);
 };
+// The page title too, since raft_shim.js makes the window title follow it.
 const setTitle = async (page, title) => {
+  await page.evaluate((t) => { document.title = t; }, title);
   const d = await identity(page);
   const r = await invokeIn(page, "window_set_server_title", { documentGeneration: d.generation, documentNonce: d.nonce, title });
   assert.equal(r.status, "ok", JSON.stringify(r));
@@ -363,11 +415,11 @@ if (scenario === "multiwindow") {
     console.log("  ..   only one server on this account; skipping the second-window checks");
   } else {
     let second;
-    await check(`window.openServer opens ${target.slug} in a new window`, async () => {
-      const d = await identity(main);
-      const r = await invokeIn(main, "window_open_server", { serverId: target.id, documentGeneration: d.generation, documentNonce: d.nonce });
-      assert.equal(r.status, "ok", JSON.stringify(r));
-      assert.equal(r.result.disposition, "opened");
+    // Raft 1.21.28 opens a server in a new window as a plain link
+    // (middle-click runs window.open, Ctrl-click follows the link).
+    const openLink = (page, url) => page.evaluate((u) => { window.open(u, "_blank", "noopener,noreferrer"); }, url);
+    await check(`a link to ${target.slug} opens it in a new window`, async () => {
+      await openLink(main, `https://app.raft.build/s/${target.slug}`);
       second = await waitForPage((u) => u.startsWith(`https://app.raft.build/s/${target.slug}`), 90_000);
     });
     await check("the new window completes the desktop handshake, signed in", async () => {
@@ -378,6 +430,18 @@ if (scenario === "multiwindow") {
     });
     await check("the first window stays on its own server", async () => {
       if (currentSlug) assert.ok(new URL(main.url()).pathname.startsWith(`/s/${currentSlug}`), main.url());
+    });
+    await check("the new window is bound to its server", async () => {
+      // raft_shim.js binds it once the page is on the server.
+      await second.waitForFunction((id) => JSON.parse(localStorage.getItem("pontoon.servers") || "[]").some((s) => s.id === id),
+        target.id.toLowerCase(), { timeout: 30_000 });
+      await second.waitForTimeout(2_000);
+    });
+    await check("a link to the same server again focuses the existing window", async () => {
+      const before = appPages().length;
+      await openLink(main, `https://app.raft.build/s/${target.slug}`);
+      await main.waitForTimeout(3_000);
+      assert.equal(appPages().length, before);
     });
     await check("opening the same server again focuses the existing window", async () => {
       const before = appPages().length;

@@ -36,7 +36,8 @@ const titleBarOf = (page) => page.evaluate(() => {
     bar: !!bar,
     region: style ? style.webkitAppRegion || style.getPropertyValue("-webkit-app-region") : null,
     padRight: style?.paddingRight,
-    caption: b ? { right: Math.round(window.innerWidth - b.right), top: b.top, width: b.width, height: b.height } : null,
+    // + 0 turns -0 into 0, which deepStrictEqual tells apart.
+    caption: b ? { right: Math.round(window.innerWidth - b.right) + 0, top: b.top + 0, width: b.width, height: b.height } : null,
     buttons: cap ? [...cap.shadowRoot.querySelectorAll("button")].map((x) => x.getAttribute("aria-label")) : [],
     strip: strip ? getComputedStyle(strip).display : null,
     captionColor: cap ? getComputedStyle(cap).getPropertyValue("--pontoon-caption-fg") : null,

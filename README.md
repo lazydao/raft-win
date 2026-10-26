@@ -73,7 +73,7 @@ Actions 会先检查标签和版本号是否一致，然后编译、测试，把
 | `src-tauri/src/notify.rs` | 通知的原生部分：去重、窗口在前台时不打扰、弹出 Windows 通知（点击后打开对应窗口和消息）、任务栏数字角标、托盘红点和悬停提示、通知开关；`notifications.log` 记录每条通知的处理结果（不含消息内容），方便排查 |
 | `src-tauri/src/server_window.rs` | 多窗口：Raft 服务器页面的新窗口链接（以及协议里可选的 `window.openServer`）打开或聚焦服务器窗口，记录每个窗口所在的服务器，退出时保存、启动时恢复 |
 | `src-tauri/src/shell.rs` | 窗口、托盘、导航策略（哪些链接在窗口内打开，哪些交给浏览器）、联网检查 |
-| `src-tauri/src/titlebar.js`、`titlebar.rs` | 无边框窗口的标题栏：Raft 网页本来就为官方桌面版把顶栏标成了拖动区域（`data-raft-titlebar`），WebView2 会把它当作标题栏；脚本再设置 `html[data-title-bar=overlay]` 让顶栏右端空出 138px，放上 Pontoon 自己的最小化、最大化、关闭按钮。没有顶栏的页面（加载页、登录页）顶部有一条可拖动的区域 |
+| `src-tauri/src/titlebar.js`、`titlebar.rs` | 无边框窗口的标题栏：把 Raft 的顶栏（`data-testid="app-top-bar"`）标成 `data-raft-titlebar`，并加上 Raft 给官方桌面版准备的样式：顶栏是拖动区域（WebView2 会把 `-webkit-app-region: drag` 当作标题栏），里面的按钮、链接、输入框照常可点，右端空出 138px，放 Pontoon 自己的最小化、最大化、关闭按钮。没有顶栏的页面（加载页、恢复页、登录服务商的页面）顶部有一条可拖动的区域 |
 | `src-tauri/src/font.rs`、`font.js` | 字体设置：读取系统字体列表（含是否等宽）、保存界面/对话/代码三种字体（各分西文和中文），并把它们注入网页 |
 | `src-tauri/src/raft_shim.js` | 注入到网页里。Raft 1.21.28 起网页端不再使用桌面协议（不读 `raftDesktopServerId`，也不再调用 `window.bindServer` / `window.setServerTitle`），这个脚本从外面补上：窗口启动时打开自己的服务器；页面切到哪个服务器就把窗口绑定到哪个服务器；窗口标题跟随页面标题；把“是否在 Raft Desktop 中打开链接”预设为网页（你自己选过的不改）。服务器列表取自网页端自己的 `/api/servers` 请求，缓存在本地 |
 | `src-tauri/capabilities/` | 权限范围：app.raft.build 只能调用上面这些命令，字体设置命令只有本地的设置窗口能调用 |

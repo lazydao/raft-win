@@ -2,24 +2,41 @@
 // official Raft Desktop on Windows. Runs at document start in every page of a
 // server window.
 //
-// - Raft's top bar is already marked as a drag region (data-raft-titlebar,
-//   -webkit-app-region: drag) for the official app, and WebView2 treats such
-//   regions as the window's title bar: drag to move or snap, double-click to
-//   maximize, right-click for the window menu.
-// - html[data-title-bar=overlay] makes Raft keep 138px free at the right end
-//   of its top bar, as it does for the official app's caption buttons, and
-//   Pontoon puts its own minimize, maximize and close buttons there.
-// - A page without Raft's top bar (the loading page, before Raft has drawn
-//   it, or a sign-in provider's page) gets a plain drag strip along its top.
+// - Raft's top bar (data-testid="app-top-bar") becomes the title bar. The
+//   official app has Raft mark it data-raft-titlebar, which the web client
+//   at app.raft.build does not do, so this script marks it and adds the rules
+//   Raft's stylesheet has for it: the bar is a drag region (WebView2 treats
+//   -webkit-app-region: drag as the window's title bar: drag to move or snap,
+//   double-click to maximize, right-click for the window menu), its buttons,
+//   links and fields stay clickable, and it keeps 138px free at its right end.
+// - Pontoon puts its minimize, maximize and close buttons in that corner, in
+//   the colour of the bar's text, which follows each server's theme.
+// - A page without Raft's top bar (the loading and recovery pages, Raft
+//   before it has drawn anything, a sign-in provider's page) gets a plain drag
+//   strip along its top.
 (() => {
   if (window.top !== window) return;
   // Native commands are only open to Raft and the bundled pages; elsewhere
   // (a sign-in provider's page) the window can still be moved, not closed.
   const native = location.origin === "https://app.raft.build" || location.hostname === "tauri.localhost" || location.protocol === "tauri:";
 
-  const BAR = "[data-raft-titlebar], [data-raft-overlay-titlebar]";
+  const raft = location.origin === "https://app.raft.build";
+  const TOP_BAR = '[data-testid="app-top-bar"]';
+  const BAR = `[data-raft-titlebar], [data-raft-overlay-titlebar], ${TOP_BAR}`;
   const HEIGHT = 48;
-  const GLYPH = { minimize: "", maximize: "", restore: "", close: "" };
+  const RESERVED = 138;
+  // As in Raft's stylesheet for the official app (October 2026), plus open
+  // dialogs, so nothing in a dialog over the bar is taken for the title bar.
+  const CSS = `
+html[data-title-bar=overlay] [data-raft-titlebar] {
+  -webkit-app-region: drag; app-region: drag;
+  padding-right: ${RESERVED}px; --raft-titlebar-inset-end: ${RESERVED}px;
+}
+[data-raft-titlebar] :is(button, a, input, select, textarea, [role=button], [contenteditable=true]),
+[data-testid=desktop-search-overlay], html[data-raft-layer-open] [data-raft-titlebar], [data-dismiss-layer], [role=dialog] {
+  -webkit-app-region: no-drag; app-region: no-drag;
+}`;
+  const GLYPH = { minimize: "\uE921", maximize: "\uE922", restore: "\uE923", close: "\uE8BB" };
 
   const invoke = (action) => {
     const internals = window.__TAURI_INTERNALS__;
@@ -39,13 +56,17 @@
   function build() {
     const root = document.documentElement;
     root.dataset.titleBar = "overlay";
+    const style = document.createElement("style");
+    style.id = "pontoon-titlebar-style";
+    style.textContent = CSS;
+    root.appendChild(style);
     // Kept outside <body>, where the page's own rendering never replaces it.
-    strip = fixed(document.createElement("div"), `left:0;right:${native ? 138 : 0}px;height:32px;-webkit-app-region:drag;app-region:drag;display:none`);
+    strip = fixed(document.createElement("div"), `left:0;right:${native ? RESERVED : 0}px;height:32px;-webkit-app-region:drag;app-region:drag;display:none`);
     strip.id = "pontoon-drag-strip";
     root.appendChild(strip);
     if (!native) return;
 
-    caption = fixed(document.createElement("div"), `right:0;width:138px;height:${HEIGHT}px;-webkit-app-region:no-drag;app-region:no-drag`);
+    caption = fixed(document.createElement("div"), `right:0;width:${RESERVED}px;height:${HEIGHT}px;-webkit-app-region:no-drag;app-region:no-drag`);
     caption.id = "pontoon-caption";
     const shadow = caption.attachShadow({ mode: "open" });
     shadow.innerHTML = `<style>
@@ -95,8 +116,8 @@
   }
 
   // The buttons take the colour of the top bar's text, as the official app's
-  // do (Raft's top bar follows each server's theme). The topmost overlay title
-  // bar (a full-page view) wins over the main one, as in the official app.
+  // do. The topmost overlay title bar (a full-page view) wins over the main
+  // one, as in the official app.
   function topBar() {
     const overlays = document.querySelectorAll("[data-raft-overlay-titlebar]:not([data-raft-overlay-titlebar-covered])");
     return overlays.length ? overlays[overlays.length - 1] : document.querySelector("[data-raft-titlebar]");
@@ -104,11 +125,17 @@
   let lastColor = "";
   function sync() {
     if (!strip) return;
-    const bar = topBar();
-    strip.style.display = document.querySelector(BAR) ? "none" : "block";
+    for (const bar of document.querySelectorAll(TOP_BAR)) {
+      if (!bar.hasAttribute("data-raft-titlebar")) bar.setAttribute("data-raft-titlebar", "");
+    }
+    // On Raft, only until it draws: its other pages have their own content
+    // at the top, which a drag strip would make unclickable.
+    const root = document.getElementById("root");
+    const bare = !raft || !root || root.childElementCount === 0;
+    strip.style.display = !document.querySelector(BAR) && bare ? "block" : "none";
     if (!caption) return;
     // Pages Raft has not drawn yet use the page's own text colour.
-    const source = bar || document.body;
+    const source = topBar() || document.body;
     const color = source ? getComputedStyle(source).color : "";
     if (color && color !== lastColor) {
       lastColor = color;
@@ -126,7 +153,7 @@
   }
 
   function start() {
-    if (document.getElementById("pontoon-caption") || document.getElementById("pontoon-drag-strip")) return;
+    if (document.getElementById("pontoon-drag-strip")) return;
     build();
     sync();
     new MutationObserver(schedule).observe(document.documentElement, {

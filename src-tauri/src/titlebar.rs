@@ -11,7 +11,7 @@ pub struct CaptionParams {
 }
 
 /// Minimizes, maximizes or restores, or closes the calling window, and says
-/// whether it is maximized. Closing goes through the usual close request, so
+/// whether it is maximized (and minimized). Closing goes through the usual close request, so
 /// the main window still hides to the tray. Async, because closing a window
 /// cannot be done from the main thread.
 #[tauri::command]
@@ -32,5 +32,6 @@ pub async fn window_caption(window: WebviewWindow, params: CaptionParams) -> Val
     json!({
         "status": if result.is_ok() { "ok" } else { "error" },
         "maximized": window.is_maximized().unwrap_or(false),
+        "minimized": window.is_minimized().unwrap_or(false),
     })
 }

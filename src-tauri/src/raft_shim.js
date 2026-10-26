@@ -17,11 +17,20 @@
 //      it at the next start.
 //   3. The window title follows the page title, with the server's name when
 //      the page title is just "Raft".
+//   4. Links to Raft stay in Pontoon: Raft's "Open in Raft Desktop?" banner
+//      (shown to accounts that used the official app lately) is answered
+//      "web" once, unless the user already chose.
 //
 // Server ids, slugs and names come from the web client's own GET /api/servers
 // (or a request of our own if that is not seen) and are kept in localStorage.
 (() => {
   if (location.origin !== "https://app.raft.build") return;
+
+  // ---- 4. Open Raft links here, not in Raft Desktop ----
+
+  try {
+    if (localStorage.getItem("raft_link_open_preference") === null) localStorage.setItem("raft_link_open_preference", "web");
+  } catch {}
 
   const API = "https://api.raft.build/api";
   const CACHE = "pontoon.servers";

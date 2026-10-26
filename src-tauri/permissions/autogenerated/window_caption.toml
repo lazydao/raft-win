@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-window-caption"
+description = "Enables the window_caption command without any pre-configured scope."
+commands.allow = ["window_caption"]
+
+[[permission]]
+identifier = "deny-window-caption"
+description = "Denies the window_caption command without any pre-configured scope."
+commands.deny = ["window_caption"]

@@ -10,7 +10,9 @@
 //      starting together don't steer each other;
 //   5. if the web client's request is not seen, it asks the API itself;
 //   6. an unknown server or a page without raftDesktopServerId is left alone;
-//   7. moving to a server binds the window to it and sets the window title.
+//   7. moving to a server binds the window to it and sets the window title;
+//   8. Raft's "Open in Raft Desktop?" choice is preset to "web", unless the
+//      user already chose.
 //
 // Usage: node tests/raft-shim.test.mjs
 import { readFileSync } from "node:fs";
@@ -206,6 +208,21 @@ await check("moving to a server binds the window to it and titles the window", a
   });
   await page.waitForTimeout(100);
   assert.deepEqual(await calls(), [], "same server and title again");
+  await page.close();
+});
+
+await check("links open in the web client unless the user chose otherwise", async () => {
+  const page = await context.newPage();
+  await page.addInitScript(() => sessionStorage.setItem("mode", "none"));
+  await page.goto("https://app.raft.build/s/alpha/channel/general");
+  const pref = () => page.evaluate(() => localStorage.getItem("raft_link_open_preference"));
+  await page.evaluate(() => localStorage.removeItem("raft_link_open_preference"));
+  await page.reload();
+  assert.equal(await pref(), "web");
+  await page.evaluate(() => localStorage.setItem("raft_link_open_preference", "app"));
+  await page.reload();
+  assert.equal(await pref(), "app");
+  await page.evaluate(() => localStorage.removeItem("raft_link_open_preference"));
   await page.close();
 });
 

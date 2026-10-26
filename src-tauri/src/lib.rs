@@ -3,6 +3,7 @@ mod font;
 mod notify;
 mod server_window;
 mod shell;
+mod titlebar;
 
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
@@ -21,7 +22,9 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![shell::HIDDEN_ARG])))
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(StateFlags::all() - StateFlags::VISIBLE)
+                // Not DECORATIONS: server windows are always undecorated, and
+                // state saved by older versions would bring the title bar back.
+                .with_state_flags(StateFlags::all() - StateFlags::VISIBLE - StateFlags::DECORATIONS)
                 .build(),
         )
         // Off: the plugin's own click hook catches target="_blank" links and
@@ -46,6 +49,7 @@ pub fn run() {
             font::font_get,
             font::font_set,
             font::font_list,
+            titlebar::window_caption,
         ])
         .setup(|app| {
             font::load(app.handle());

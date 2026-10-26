@@ -24,6 +24,47 @@ async function waitForPage(predicate, timeoutMs = 60_000) {
 process.on("uncaughtException", (e) => { console.log(`  FAIL ${scenario}: ${e.stack || e}`); process.exit(1); });
 process.on("unhandledRejection", (e) => { console.log(`  FAIL ${scenario}: ${e?.stack || e}`); process.exit(1); });
 
+// What titlebar.js shows in a page: Raft's top bar as the drag region, the
+// corner it leaves free, and Pontoon's window buttons there.
+const titleBarOf = (page) => page.evaluate(() => {
+  const bar = document.querySelector("[data-raft-titlebar]");
+  const cap = document.getElementById("pontoon-caption");
+  const strip = document.getElementById("pontoon-drag-strip");
+  const style = bar && getComputedStyle(bar);
+  const b = cap?.getBoundingClientRect();
+  return {
+    bar: !!bar,
+    region: style ? style.webkitAppRegion || style.getPropertyValue("-webkit-app-region") : null,
+    padRight: style?.paddingRight,
+    // + 0 turns -0 into 0, which deepStrictEqual tells apart.
+    caption: b ? { right: Math.round(window.innerWidth - b.right) + 0, top: b.top + 0, width: b.width, height: b.height } : null,
+    buttons: cap ? [...cap.shadowRoot.querySelectorAll("button")].map((x) => x.getAttribute("aria-label")) : [],
+    strip: strip ? getComputedStyle(strip).display : null,
+    captionColor: cap ? getComputedStyle(cap).getPropertyValue("--pontoon-caption-fg") : null,
+    barColor: style?.color,
+    clickables: bar ? bar.querySelectorAll("button, a, input, [role=button]").length : 0,
+    clickablesNoDrag: bar ? [...bar.querySelectorAll("button, a, input, [role=button]")].filter((e) => {
+      const s = getComputedStyle(e);
+      return (s.webkitAppRegion || s.getPropertyValue("-webkit-app-region")) === "no-drag";
+    }).length : 0,
+    overlapping: bar && b ? [...bar.querySelectorAll("button, a, input, [role=button]")].filter((e) => {
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.right > b.left && r.top < b.bottom;
+    }).map((e) => e.getAttribute("aria-label") || e.textContent.trim().slice(0, 20) || e.tagName) : [],
+  };
+});
+const assertTitleBar = (t) => {
+  assert.ok(t.bar, "no [data-raft-titlebar] on the page");
+  assert.equal(t.region, "drag");
+  assert.ok(t.clickables > 0 && t.clickablesNoDrag === t.clickables, `top bar controls that would drag the window: ${t.clickables - t.clickablesNoDrag} of ${t.clickables}`);
+  assert.ok(t.overlapping.length === 0, `top bar controls under the window buttons: ${t.overlapping.join(", ")}`);
+  assert.equal(t.padRight, "138px", "Raft's top bar does not leave the buttons' corner free");
+  assert.deepEqual(t.caption, { right: 0, top: 0, width: 138, height: 48 });
+  assert.equal(t.buttons.length, 3, JSON.stringify(t.buttons));
+  assert.equal(t.strip, "none", "the fallback drag strip is showing over Raft's top bar");
+  assert.equal(t.captionColor.trim(), t.barColor, "window buttons are not in the top bar's text colour");
+};
+
 const check = async (name, fn) => {
   try { await fn(); console.log(`  ok   ${name}`); }
   catch (e) { console.log(`  FAIL ${name}: ${e.message}`); process.exitCode = 1; }
@@ -76,6 +117,41 @@ if (scenario === "online") {
     [command, params],
   );
   const doc = await page.evaluate(() => window.__RAFT_DESKTOP_DOCUMENT__);
+
+  await check("Raft's top bar is the title bar, with Pontoon's window buttons at its right end", async () => {
+    await page.waitForSelector("[data-testid=app-top-bar][data-raft-titlebar]", { timeout: 30_000 });
+    await page.waitForTimeout(500);
+    const t = await titleBarOf(page);
+    console.log(`       ${JSON.stringify(t)}`);
+    assertTitleBar(t);
+  });
+  await check("the maximize button maximizes and restores the window", async () => {
+    const maximized = () => call("window_caption", { action: "state" }).then((r) => r.maximized);
+    const button = page.locator("#pontoon-caption >> button.maximize");
+    const before = await maximized();
+    await button.click();
+    await page.waitForFunction(async (b) => (await window.__TAURI_INTERNALS__.invoke("window_caption", { params: { action: "state" } })).maximized !== b, before, { timeout: 10_000, polling: 300 });
+    await page.waitForTimeout(500);
+    assert.equal(await button.getAttribute("aria-label"), before ? "最大化" : "向下还原");
+    await button.click();
+    await page.waitForFunction(async (b) => (await window.__TAURI_INTERNALS__.invoke("window_caption", { params: { action: "state" } })).maximized === b, before, { timeout: 10_000, polling: 300 });
+    await page.waitForTimeout(500);
+    assert.equal(await button.getAttribute("aria-label"), before ? "向下还原" : "最大化");
+  });
+  await check("the minimize button minimizes the window", async () => {
+    const minimized = () => call("window_caption", { action: "state" }).then((r) => r.minimized);
+    await page.locator("#pontoon-caption >> button.minimize").click();
+    const end = Date.now() + 10_000;
+    while (!(await minimized()) && Date.now() < end) await page.waitForTimeout(300);
+    assert.ok(await minimized(), "still not minimized after 10 s");
+    await call("window_focus", null);
+    await page.waitForTimeout(1_000);
+    assert.equal(await minimized(), false, "window_focus did not bring it back");
+  });
+  await check("window_caption ignores unknown actions", async () => {
+    const r = await call("window_caption", { action: "destroy" });
+    assert.equal(r.status, "error");
+  });
 
   await check("native handshake answers ok", async () => {
     const r = await call("desktop_handshake", {
@@ -150,7 +226,8 @@ if (scenario === "online") {
       a.target = "_blank";
       a.rel = "noopener noreferrer";
       a.textContent = "e2e link";
-      a.style.cssText = "position:fixed;top:4px;left:4px;z-index:2147483647;background:#fff;padding:4px";
+      // Over Raft's top bar, which is a drag region now; keep the link clickable.
+      a.style.cssText = "position:fixed;top:4px;left:4px;z-index:2147483647;background:#fff;padding:4px;-webkit-app-region:no-drag";
       document.body.append(a);
     }, href);
     await page.click("#pontoon-e2e-link");
@@ -428,6 +505,11 @@ if (scenario === "multiwindow") {
       assert.equal(await second.locator("#raft-desktop-handshake-recovery").count(), 0);
       assert.ok(await second.evaluate(() => !!localStorage.getItem("slock_access_token")), "second window is signed out");
     });
+    await check("the new window has the same title bar and window buttons", async () => {
+      await second.waitForSelector("[data-testid=app-top-bar][data-raft-titlebar]", { timeout: 30_000 });
+      await second.waitForTimeout(500);
+      assertTitleBar(await titleBarOf(second));
+    });
     await check("the first window stays on its own server", async () => {
       if (currentSlug) assert.ok(new URL(main.url()).pathname.startsWith(`/s/${currentSlug}`), main.url());
     });
@@ -483,6 +565,11 @@ if (scenario === "offline") {
   const page = await waitForPage((u) => u.endsWith("/recovery.html"), 45_000);
   await check("recovery page shown when Raft is unreachable", async () => {
     await page.getByRole("button", { name: "重试" }).waitFor({ timeout: 10_000 });
+  });
+  await check("the recovery page can be dragged and has the window buttons", async () => {
+    const t = await titleBarOf(page);
+    assert.equal(t.strip, "block", JSON.stringify(t));
+    assert.equal(t.buttons.length, 3, JSON.stringify(t));
   });
   await check("retry stays on recovery while still offline", async () => {
     await page.getByRole("button", { name: "重试" }).click();

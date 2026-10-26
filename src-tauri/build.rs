@@ -13,6 +13,7 @@ fn main() {
             "font_get",
             "font_set",
             "font_list",
+            "window_caption",
         ]),
     ))
     .expect("failed to run tauri-build");

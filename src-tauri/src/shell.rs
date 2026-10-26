@@ -183,6 +183,9 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
         .title("Raft")
         .inner_size(1280.0, 820.0)
         .min_inner_size(420.0, 560.0)
+        // No Windows title bar: Raft's own top bar is the title bar, with
+        // Pontoon's window buttons at its right end (titlebar.js).
+        .decorations(false)
         .visible(false)
         .zoom_hotkeys_enabled(true)
         .initialization_script(contract::environment_init_script())
@@ -191,6 +194,7 @@ pub fn create_server_window(app: &AppHandle, label: &str, visible: bool) -> taur
         .initialization_script(include_str!("notify.js"))
         .initialization_script(include_str!("font.js"))
         .initialization_script(include_str!("raft_shim.js"))
+        .initialization_script(include_str!("titlebar.js"))
         .on_navigation(move |url| {
             if allow_navigation(url) {
                 log_navigation(&nav_app, "in-app", url);

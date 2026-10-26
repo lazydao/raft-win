@@ -82,6 +82,33 @@ Add-Type -Namespace Pontoon -Name Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr hwnd, uint msg, System.IntPtr w, System.IntPtr l);
 '@
 if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E check | Raft") -ne [System.IntPtr]::Zero) { Pass "native window title follows window.setServerTitle" } else { Fail "no top-level window titled 'E2E check | Raft'" }
+# Server windows have no Windows title bar: the page starts at the top of the
+# window (tao keeps WS_CAPTION for snapping and animations but draws no frame;
+# on Windows 11 it leaves a 1-3 px top inset, and the invisible resize borders
+# on the other sides are outside the page), and the window can still be
+# resized from its edges (WS_THICKFRAME).
+Add-Type -Namespace Pontoon -Name Frame -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+[DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr hwnd, out RECT r);
+[StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+[DllImport("user32.dll")] public static extern bool ClientToScreen(System.IntPtr hwnd, ref POINT p);
+[DllImport("user32.dll")] public static extern int GetWindowLong(System.IntPtr hwnd, int index);
+[DllImport("user32.dll")] public static extern bool IsZoomed(System.IntPtr hwnd);
+'@
+function Test-Frameless($title) {
+  $hwnd = [Pontoon.Win32]::FindWindow([NullString]::Value, $title)
+  if ($hwnd -eq [System.IntPtr]::Zero) { Fail "no window titled '$title' to check the frame of"; return }
+  $w = New-Object Pontoon.Frame+RECT; $p = New-Object Pontoon.Frame+POINT
+  [Pontoon.Frame]::GetWindowRect($hwnd, [ref]$w) | Out-Null
+  [Pontoon.Frame]::ClientToScreen($hwnd, [ref]$p) | Out-Null
+  $above = $p.Y - $w.Top
+  $zoomed = [Pontoon.Frame]::IsZoomed($hwnd)
+  if ($zoomed -or $above -le 4) { Pass "'$title' has no Windows title bar (page starts $above px below the window's top, maximized: $zoomed)" }
+  else { Fail "'$title' has a title bar: the page starts $above px below the window's top" }
+  $style = [Pontoon.Frame]::GetWindowLong($hwnd, -16)
+  if (($style -band 0x00040000) -ne 0) { Pass "'$title' can be resized from its edges" } else { Fail ("'$title' is not resizable (style 0x{0:X8})" -f $style) }
+}
+Test-Frameless "E2E check | Raft"
 
 Write-Host "== Notifications"
 # notifications.log records what happened to each message (never its text).
@@ -169,6 +196,7 @@ if ((Run-Node "multiwindow") -eq 0) { Pass "multiwindow scenario" } else { Fail 
 $multi = if (Test-Path $multiFile) { Get-Content $multiFile -Raw | ConvertFrom-Json } else { $null }
 if ($multi) {
   if ([Pontoon.Win32]::FindWindow([NullString]::Value, "E2E second window | Raft") -ne [System.IntPtr]::Zero) { Pass "second server window is a native top-level window" } else { Fail "no window titled 'E2E second window | Raft'" }
+  Test-Frameless "E2E second window | Raft"
 }
 
 Write-Host "== Close to tray"

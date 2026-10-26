@@ -3,5 +3,5 @@
   "identifier": "local",
   "description": "Bundled loading and recovery pages.",
   "windows": ["server-*"],
-  "permissions": ["allow-recovery-retry", "allow-recovery-quit"]
+  "permissions": ["allow-recovery-retry", "allow-recovery-quit", "allow-window-caption"]
 }

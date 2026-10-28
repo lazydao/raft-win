@@ -1,7 +1,8 @@
 // Checks font.js and the font settings window in Chromium, without Windows:
 //   1. font.js turns each choice into the font lists Raft's text ends up with,
 //      Latin font first and Chinese font second, with the documented fallbacks
-//      (chat follows the interface, Chinese in code follows the chat);
+//      (chat follows the interface, Chinese in code follows the chat), and
+//      the message box gets the chat font;
 //   2. settings from before the Chinese fonts existed render as they did;
 //   3. the settings window shows only Chinese-capable fonts for the Chinese
 //      half of a part, and saves all six choices.
@@ -23,6 +24,7 @@ const RAFT_PAGE = `<!doctype html><html><head>
 <nav id="ui">频道 Channels</nav>
 <div data-raft-markdown-content=""><p id="chat">你好 hello</p><pre><code id="block">let a = 1; // 注释</code></pre></div>
 <span class="font-mono" id="mono">abc</span>
+<textarea data-testid="composer-textarea" id="composer">你好 hello</textarea>
 </body></html>`;
 
 const browser = await chromium.launch();
@@ -47,7 +49,7 @@ const families = (fonts) =>
   page.evaluate((fonts) => {
     window.__pontoonSetFont(fonts);
     const f = (id) => getComputedStyle(document.getElementById(id)).fontFamily.replace(/"/g, "");
-    return { ui: f("ui"), chat: f("chat"), code: f("block"), mono: f("mono") };
+    return { ui: f("ui"), chat: f("chat"), code: f("block"), mono: f("mono"), composer: f("composer") };
   }, fonts);
 const RAFT_CJK = "PingFang SC, Hiragino Sans GB, Microsoft YaHei, Noto Sans SC";
 
@@ -73,6 +75,12 @@ await check("each part splits Latin and Chinese", async () => {
   assert.equal(f.ui, "Segoe UI, Microsoft YaHei, sans-serif");
   assert.equal(f.chat, "Georgia, LXGW WenKai, sans-serif");
   assert.equal(f.code, "Cascadia Code, Sarasa Mono SC, monospace");
+});
+await check("the message box uses the chat font", async () => {
+  const f = await families({ ui: "Segoe UI", uiCjk: "Microsoft YaHei", chat: "Georgia", chatCjk: "LXGW WenKai" });
+  assert.equal(f.composer, "Georgia, LXGW WenKai, sans-serif");
+  const g = await families({ ui: "Segoe UI", uiCjk: "KaiTi" });
+  assert.equal(g.composer, g.chat);
 });
 await check("chat follows the interface, code's Chinese follows the chat", async () => {
   const f = await families({ ui: "Segoe UI", uiCjk: "KaiTi", code: "Consolas" });

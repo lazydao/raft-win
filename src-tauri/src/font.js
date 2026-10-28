@@ -1,6 +1,7 @@
 // Pontoon font settings. Runs at document start in every page of the main
 // window. Three parts get their own fonts: the interface, the chat (message
-// text, which Raft renders inside [data-raft-markdown-content]) and code.
+// text, which Raft renders inside [data-raft-markdown-content], and the
+// message box you type it in) and code.
 // Each part has a Latin font and a Chinese (CJK) font. Unset chat fonts
 // follow the interface fonts, Chinese in code follows the chat's Chinese
 // font, and anything else unset keeps Raft's own font. The native side calls
@@ -27,7 +28,9 @@
 
   const CODE = "code, pre, kbd, samp, .font-mono";
   const IN_CODE = `${CODE}, :is(${CODE}) *`;
-  const CHAT = "[data-raft-markdown-content]";
+  // The composer is a plain <textarea>; it takes the chat font so a message
+  // looks the same while you type it as after it is sent.
+  const CHAT = '[data-raft-markdown-content], [data-testid="composer-textarea"]';
 
   // The browser takes each character from the first font in the list that
   // has it. Latin fonts have no Chinese characters, so putting the Latin
@@ -55,7 +58,7 @@
     }
     if (chat) {
       // Higher specificity than the interface rule, so it wins inside messages.
-      rules.push(`html body ${CHAT},html body ${CHAT} *:not(${IN_CODE}){font-family:${chat}!important}`);
+      rules.push(`html body :is(${CHAT}),html body :is(${CHAT}) *:not(${IN_CODE}){font-family:${chat}!important}`);
     }
     if (code) {
       rules.push(

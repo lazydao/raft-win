@@ -369,6 +369,13 @@ if (scenario === "font") {
     if (f === null) console.log("  ..   no message visible in the open channel; covered by the probe above");
     else assert.ok(uses(f, TEST.chat), f);
   });
+  await check("the message box uses the chat font", async () => {
+    const box = main.locator('[data-testid="composer-textarea"]').first();
+    await box.waitFor({ timeout: 15_000 });
+    const f = await box.evaluate((e) => getComputedStyle(e).fontFamily);
+    assert.ok(uses(f, TEST.chat), `message box uses ${f}`);
+    assert.ok(f.includes(TEST.chatCjk), `message box has no ${TEST.chatCjk}: ${f}`);
+  });
   await check("unset chat font follows the interface font", async () => {
     const r = await invoke(settings, "font_set", { fonts: { ui: TEST.ui, uiCjk: TEST.uiCjk, chat: null, code: TEST.code } });
     assert.ok(!r.error, r.error);

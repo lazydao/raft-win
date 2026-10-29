@@ -153,10 +153,11 @@ if (scenario === "online") {
     assert.equal(r.status, "error");
   });
   // Raft's file and image viewer covers the window with a top bar of its own,
-  // its close button at the right end. Opens the first file or picture on
-  // screen; with none there is nothing to check.
+  // its close button at the right end. Opens the last file or picture on
+  // screen, else the first file in the channel's Files tab (switching back to
+  // the tab that was open afterwards); with neither there is nothing to check.
   await check("the file viewer's close button sits left of the window buttons and closes only the viewer", async () => {
-    const opened = await page.evaluate(() => {
+    const findOnScreen = () => page.evaluate(() => {
       const FILE = /\.(md|markdown|txt|pdf|png|jpe?g|gif|webp|svg|docx?|xlsx?|pptx?|csv|json|html?|zip|log)$/i;
       const seen = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.top >= 48 && r.bottom <= innerHeight; };
       const pictures = [...document.querySelectorAll("[data-timeline-row-key] img")].filter((e) => seen(e) && e.width >= 64 && e.height >= 48);
@@ -166,7 +167,22 @@ if (scenario === "online") {
       target.setAttribute("data-pontoon-e2e-open", "");
       return target.tagName === "IMG" ? `picture ${target.alt || target.src.slice(0, 60)}` : (target.getAttribute("aria-label") || target.textContent).trim().slice(0, 60);
     });
-    if (!opened) { console.log("       skipped: no file or picture on screen to open"); return; }
+    let opened = await findOnScreen();
+    let tabBefore = null;
+    if (!opened && (await page.locator("[data-testid=panel-tab-files]").count())) {
+      tabBefore = await page.evaluate(() => document.querySelector('[data-testid^=panel-tab-][aria-selected=true]')?.dataset.testid ?? "panel-tab-chat");
+      await page.locator("[data-testid=panel-tab-files]").first().click();
+      const preview = page.locator('button:is([aria-label^="预览"], [aria-label^="Preview"])').first();
+      await preview.waitFor({ timeout: 10_000 }).catch(() => {});
+      if (await preview.count()) {
+        opened = `${await preview.getAttribute("aria-label")} (Files tab)`;
+        await preview.evaluate((e) => e.setAttribute("data-pontoon-e2e-open", ""));
+      }
+    }
+    const restoreTab = async () => {
+      if (tabBefore && tabBefore !== "panel-tab-files") await page.locator(`[data-testid=${tabBefore}]`).first().click().catch(() => {});
+    };
+    if (!opened) { await restoreTab(); console.log("       skipped: no file or picture on screen or in the Files tab to open"); return; }
     await page.locator("[data-pontoon-e2e-open]").first().click();
     await page.waitForSelector("[data-testid=file-viewer-header]", { timeout: 15_000 });
     await page.waitForTimeout(800);
@@ -206,6 +222,7 @@ if (scenario === "online") {
     assert.equal(after.minimized, before.minimized);
     await page.evaluate(() => document.querySelector("[data-pontoon-e2e-open]")?.removeAttribute("data-pontoon-e2e-open"));
     await page.waitForFunction(() => !document.documentElement.hasAttribute("data-raft-layer-open"), null, { timeout: 5_000 });
+    await restoreTab();
   });
 
   await check("native handshake answers ok", async () => {

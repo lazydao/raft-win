@@ -11,6 +11,13 @@
 //   links and fields stay clickable, and it keeps 138px free at its right end.
 // - Pontoon puts its minimize, maximize and close buttons in that corner, in
 //   the colour of the bar's text, which follows each server's theme.
+// - Raft's full-window viewers (a file or an image) have a top bar of their
+//   own. The official app marks it data-raft-overlay-titlebar and leaves the
+//   same corner free in it; this script does that too, and tracks open
+//   dialogs and menus as the official app does, so the bars under them stop
+//   being drag regions.
+// - Any other control of Raft's that still ends up under the buttons wins:
+//   the buttons step aside until it is gone.
 // - A page without Raft's top bar (the loading and recovery pages, Raft
 //   before it has drawn anything, a sign-in provider's page) gets a plain drag
 //   strip along its top.
@@ -22,20 +29,36 @@
 
   const raft = location.origin === "https://app.raft.build";
   const TOP_BAR = '[data-testid="app-top-bar"]';
+  // The file and image viewer's top bar, and the top bar of Raft's other
+  // lightboxes.
+  const OVERLAY_BAR = '[data-testid="file-viewer-header"], [data-slot="lightbox-toolbar"]';
   const BAR = `[data-raft-titlebar], [data-raft-overlay-titlebar], ${TOP_BAR}`;
   const HEIGHT = 48;
   const RESERVED = 138;
   // As in Raft's stylesheet for the official app (October 2026), plus open
   // dialogs, so nothing in a dialog over the bar is taken for the title bar.
+  // A viewer's bar keeps its own 16px on the right, as the official app's does.
   const CSS = `
 html[data-title-bar=overlay] [data-raft-titlebar] {
   -webkit-app-region: drag; app-region: drag;
   padding-right: ${RESERVED}px; --raft-titlebar-inset-end: ${RESERVED}px;
 }
+html[data-title-bar=overlay] [data-raft-overlay-titlebar] {
+  -webkit-app-region: drag; app-region: drag;
+  padding-right: ${16 + RESERVED}px !important; --raft-titlebar-inset-end: ${RESERVED}px;
+}
 [data-raft-titlebar] :is(button, a, input, select, textarea, [role=button], [contenteditable=true]),
+[data-raft-overlay-titlebar] :is(button, a, input, select, textarea, [role=button], [contenteditable=true], [data-raft-overlay-titlebar-no-drag]),
+html [data-raft-overlay-titlebar][data-raft-overlay-titlebar-covered],
 [data-testid=desktop-search-overlay], html[data-raft-layer-open] [data-raft-titlebar], [data-dismiss-layer], [role=dialog] {
   -webkit-app-region: no-drag; app-region: no-drag;
 }`;
+  // What the official app counts as an open layer: dialogs, menus, popovers
+  // and the like, but not tooltips, toasts or closed ones.
+  const LAYER = '[data-dismiss-layer]:not([data-dismiss-layer="false"]), [role="dialog"], [role="alertdialog"], [data-slot$="-content"][data-open], [data-slot$="-popup"][data-open], [data-slot$="-overlay"][data-open], [data-slot$="-backdrop"][data-open]';
+  const NOT_LAYER = '[data-dismiss-layer="false"], [data-slot^="tooltip"], [data-slot^="preview-card"], [data-slot^="toast"], [data-closed], [hidden], [aria-hidden="true"]';
+  // Things the page means to be clicked.
+  const CONTROL = 'button, a[href], input, select, textarea, [role=button], [role=menuitem], [role=tab], [role=checkbox], [role=switch], [contenteditable=true]';
   const GLYPH = { minimize: "\uE921", maximize: "\uE922", restore: "\uE923", close: "\uE8BB" };
 
   const invoke = (action) => {
@@ -122,18 +145,52 @@ html[data-title-bar=overlay] [data-raft-titlebar] {
     const overlays = document.querySelectorAll("[data-raft-overlay-titlebar]:not([data-raft-overlay-titlebar-covered])");
     return overlays.length ? overlays[overlays.length - 1] : document.querySelector("[data-raft-titlebar]");
   }
+  // As the official app does: the page has data-raft-layer-open while a
+  // layer is open, and a viewer's bar is covered while another layer is open
+  // over it. Layers are portals at the end of the page, so one over the bar
+  // comes after it; the viewer's own backdrop comes before.
+  function trackLayers() {
+    const layers = [...document.querySelectorAll(LAYER)].filter((e) => !e.closest(NOT_LAYER));
+    const root = document.documentElement;
+    if (root.hasAttribute("data-raft-layer-open") !== layers.length > 0) root.toggleAttribute("data-raft-layer-open", layers.length > 0);
+    for (const bar of document.querySelectorAll("[data-raft-overlay-titlebar]")) {
+      const covered = layers.some((l) => !l.contains(bar) && bar.compareDocumentPosition(l) & Node.DOCUMENT_POSITION_FOLLOWING);
+      if (bar.hasAttribute("data-raft-overlay-titlebar-covered") !== covered) bar.toggleAttribute("data-raft-overlay-titlebar-covered", covered);
+    }
+  }
+
+  // A control of the page's own under the buttons: Raft drew something there
+  // that this script does not know to move (a side panel's close button, say).
+  function controlUnderneath() {
+    const w = window.innerWidth;
+    for (const x of [w - RESERVED + 23, w - 69, w - 23]) {
+      for (const y of [12, HEIGHT / 2, HEIGHT - 12]) {
+        const el = document.elementsFromPoint(x, y).find((e) => e !== caption && e !== strip);
+        const control = el && el.closest(CONTROL);
+        if (control) return control;
+      }
+    }
+    return null;
+  }
+
   let lastColor = "";
   function sync() {
     if (!strip) return;
     for (const bar of document.querySelectorAll(TOP_BAR)) {
       if (!bar.hasAttribute("data-raft-titlebar")) bar.setAttribute("data-raft-titlebar", "");
     }
+    for (const bar of document.querySelectorAll(OVERLAY_BAR)) {
+      if (!bar.hasAttribute("data-raft-overlay-titlebar")) bar.setAttribute("data-raft-overlay-titlebar", "");
+    }
+    trackLayers();
     // On Raft, only until it draws: its other pages have their own content
     // at the top, which a drag strip would make unclickable.
     const root = document.getElementById("root");
     const bare = !raft || !root || root.childElementCount === 0;
     strip.style.display = !document.querySelector(BAR) && bare ? "block" : "none";
     if (!caption) return;
+    const hide = !!controlUnderneath();
+    if ((caption.style.display === "none") !== hide) caption.style.display = hide ? "none" : "";
     // Pages Raft has not drawn yet use the page's own text colour.
     const source = topBar() || document.body;
     const color = source ? getComputedStyle(source).color : "";
@@ -160,10 +217,15 @@ html[data-title-bar=overlay] [data-raft-titlebar] {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["class", "style", "data-theme", "data-raft-overlay-titlebar-covered"],
+      attributeFilter: ["class", "style", "data-theme", "data-raft-overlay-titlebar-covered", "data-open", "data-closed", "hidden", "aria-hidden", "role", "data-slot", "data-dismiss-layer"],
     });
     // Raft's theme can follow the system's light or dark mode.
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", schedule);
+    // Panels slide and fade in after the change that adds them, and the
+    // window's size decides what reaches its corner.
+    window.addEventListener("transitionend", schedule, true);
+    window.addEventListener("animationend", schedule, true);
+    window.addEventListener("resize", schedule);
     // The attribute that reserves the buttons' corner must stay on.
     new MutationObserver(() => {
       if (document.documentElement.dataset.titleBar !== "overlay") document.documentElement.dataset.titleBar = "overlay";

@@ -183,46 +183,51 @@ if (scenario === "online") {
       if (tabBefore && tabBefore !== "panel-tab-files") await page.locator(`[data-testid=${tabBefore}]`).first().click().catch(() => {});
     };
     if (!opened) { await restoreTab(); console.log("       skipped: no file or picture on screen or in the Files tab to open"); return; }
-    await page.locator("[data-pontoon-e2e-open]").first().click();
-    await page.waitForSelector("[data-testid=file-viewer-header]", { timeout: 15_000 });
-    await page.waitForTimeout(800);
-    const v = await page.evaluate(() => {
-      const bar = document.querySelector("[data-testid=file-viewer-header]");
-      const cap = document.getElementById("pontoon-caption").getBoundingClientRect();
-      const s = getComputedStyle(bar);
-      const controls = [...bar.querySelectorAll("button, a, [role=button]")].filter((e) => e.getBoundingClientRect().width > 0);
-      const close = controls[controls.length - 1];
-      const c = close.getBoundingClientRect();
-      const hit = document.elementFromPoint(c.left + c.width / 2, c.top + c.height / 2);
-      return {
-        marked: bar.hasAttribute("data-raft-overlay-titlebar"),
-        region: s.webkitAppRegion || s.getPropertyValue("-webkit-app-region"),
-        padRight: s.paddingRight,
-        captionShown: getComputedStyle(document.getElementById("pontoon-caption")).display !== "none",
-        controls: controls.map((e) => e.getAttribute("aria-label")),
-        under: controls.filter((e) => e.getBoundingClientRect().right > cap.left).map((e) => e.getAttribute("aria-label")),
-        closeLabel: close.getAttribute("aria-label"),
-        closeHitsItself: !!hit && close.contains(hit),
-        layerOpen: document.documentElement.hasAttribute("data-raft-layer-open"),
-      };
-    });
-    console.log(`       opened ${opened}: ${JSON.stringify(v)}`);
-    assert.ok(v.marked, "the viewer's top bar is not marked as a title bar");
-    assert.equal(v.padRight, `${16 + 138}px`);
-    assert.equal(v.region, "drag");
-    assert.ok(v.captionShown, "the window buttons are hidden while the viewer is open");
-    assert.deepEqual(v.under, [], "viewer buttons under the window buttons");
-    assert.ok(v.closeHitsItself, `the viewer's close button (${v.closeLabel}) is covered`);
-    assert.ok(v.layerOpen, "no data-raft-layer-open while the viewer is open");
-    const before = await call("window_caption", { action: "state" });
-    await page.locator("[data-testid=file-viewer-header] :is(button, a, [role=button])").last().click();
-    await page.waitForSelector("[data-testid=file-viewer-header]", { state: "detached", timeout: 10_000 });
-    const after = await call("window_caption", { action: "state" });
-    assert.equal(after.status, "ok", "the window is gone after closing the viewer");
-    assert.equal(after.minimized, before.minimized);
-    await page.evaluate(() => document.querySelector("[data-pontoon-e2e-open]")?.removeAttribute("data-pontoon-e2e-open"));
-    await page.waitForFunction(() => !document.documentElement.hasAttribute("data-raft-layer-open"), null, { timeout: 5_000 });
-    await restoreTab();
+    try {
+      await page.locator("[data-pontoon-e2e-open]").first().click();
+      await page.waitForSelector("[data-testid=file-viewer-header]", { timeout: 15_000 });
+      await page.waitForTimeout(800);
+      const v = await page.evaluate(() => {
+        const bar = document.querySelector("[data-testid=file-viewer-header]");
+        const cap = document.getElementById("pontoon-caption").getBoundingClientRect();
+        const s = getComputedStyle(bar);
+        const controls = [...bar.querySelectorAll("button, a, [role=button]")].filter((e) => e.getBoundingClientRect().width > 0);
+        const close = controls[controls.length - 1];
+        const c = close.getBoundingClientRect();
+        const hit = document.elementFromPoint(c.left + c.width / 2, c.top + c.height / 2);
+        return {
+          marked: bar.hasAttribute("data-raft-overlay-titlebar"),
+          region: s.webkitAppRegion || s.getPropertyValue("-webkit-app-region"),
+          padRight: s.paddingRight,
+          captionShown: getComputedStyle(document.getElementById("pontoon-caption")).display !== "none",
+          controls: controls.map((e) => e.getAttribute("aria-label")),
+          under: controls.filter((e) => e.getBoundingClientRect().right > cap.left).map((e) => e.getAttribute("aria-label")),
+          closeLabel: close.getAttribute("aria-label"),
+          closeHitsItself: !!hit && close.contains(hit),
+          layerOpen: document.documentElement.hasAttribute("data-raft-layer-open"),
+        };
+      });
+      console.log(`       opened ${opened}: ${JSON.stringify(v)}`);
+      assert.ok(v.marked, "the viewer's top bar is not marked as a title bar");
+      assert.equal(v.padRight, `${16 + 138}px`);
+      assert.equal(v.region, "drag");
+      assert.ok(v.captionShown, "the window buttons are hidden while the viewer is open");
+      assert.deepEqual(v.under, [], "viewer buttons under the window buttons");
+      assert.ok(v.closeHitsItself, `the viewer's close button (${v.closeLabel}) is covered`);
+      assert.ok(v.layerOpen, "no data-raft-layer-open while the viewer is open");
+      const before = await call("window_caption", { action: "state" });
+      await page.locator("[data-testid=file-viewer-header] :is(button, a, [role=button])").last().click();
+      await page.waitForSelector("[data-testid=file-viewer-header]", { state: "detached", timeout: 10_000 });
+      const after = await call("window_caption", { action: "state" });
+      assert.equal(after.status, "ok", "the window is gone after closing the viewer");
+      assert.equal(after.minimized, before.minimized);
+      await page.evaluate(() => document.querySelector("[data-pontoon-e2e-open]")?.removeAttribute("data-pontoon-e2e-open"));
+      await page.waitForFunction(() => !document.documentElement.hasAttribute("data-raft-layer-open"), null, { timeout: 5_000 });
+    } finally {
+      // After a failed check the viewer may still be open over the tabs.
+      if (await page.locator("[data-testid=file-viewer-header]").count()) await page.keyboard.press("Escape").catch(() => {});
+      await restoreTab();
+    }
   });
 
   await check("native handshake answers ok", async () => {

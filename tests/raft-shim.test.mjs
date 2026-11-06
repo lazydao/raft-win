@@ -12,7 +12,10 @@
 //   6. an unknown server or a page without raftDesktopServerId is left alone;
 //   7. moving to a server binds the window to it and sets the window title;
 //   8. Raft's "Open in Raft Desktop?" choice is preset to "web", unless the
-//      user already chose.
+//      user already chose;
+//   9. pages Raft remembers (per server, per tab, last overall) are stored
+//      without ?msg=, including ones remembered before, and nothing else is
+//      changed.
 //
 // Usage: node tests/raft-shim.test.mjs
 import { readFileSync } from "node:fs";
@@ -224,6 +227,55 @@ await check("links open in the web client unless the user chose otherwise", asyn
   assert.equal(await pref(), "app");
   await page.evaluate(() => localStorage.removeItem("raft_link_open_preference"));
   await page.close();
+});
+
+await check("remembered pages are kept without the message they pointed at", async () => {
+  const C = "bc2c1385-a6dd-4fd9-a14b-f3f00a0d7e36";
+  const thread = `thread=${C}%3A54c48030-55d2-455f-8234-de8276dd1f7c`;
+  const linked = `/s/alpha/channel/${C}?msg=7535fd78-e4e5-458e-aea3-c8ef2cda0027&${thread}`;
+  const p2 = await context.newPage();
+  await p2.addInitScript(() => sessionStorage.setItem("mode", "none"));
+  await p2.goto("https://app.raft.build/s/alpha/channel/general");
+  const got = await p2.evaluate(([linked, thread, C]) => {
+    localStorage.setItem("slock:tabMemory:v2:alpha:chat", linked);
+    localStorage.setItem("slock:serverSurface:v1:alpha", linked + "#top");
+    localStorage.setItem("slock:last-location", JSON.stringify({ path: linked, ts: 5 }));
+    localStorage.setItem("slock:tabMemory:v2:alpha:members", `/s/alpha/channel/${C}?msg=1`);
+    localStorage.setItem("other", linked);
+    sessionStorage.setItem("slock:tabMemory:v2:alpha:chat", linked);
+    return {
+      chat: localStorage.getItem("slock:tabMemory:v2:alpha:chat"),
+      surface: localStorage.getItem("slock:serverSurface:v1:alpha"),
+      last: JSON.parse(localStorage.getItem("slock:last-location")),
+      members: localStorage.getItem("slock:tabMemory:v2:alpha:members"),
+      other: localStorage.getItem("other"),
+      session: sessionStorage.getItem("slock:tabMemory:v2:alpha:chat"),
+    };
+  }, [linked, thread, C]);
+  assert.equal(got.chat, `/s/alpha/channel/${C}?${thread}`);
+  assert.equal(got.surface, `/s/alpha/channel/${C}?${thread}#top`);
+  assert.deepEqual(got.last, { path: `/s/alpha/channel/${C}?${thread}`, ts: 5 });
+  assert.equal(got.members, `/s/alpha/channel/${C}`);
+  assert.equal(got.other, linked, "other keys untouched");
+  assert.equal(got.session, linked, "sessionStorage untouched");
+
+  // Remembered before this version (written past setItem, as the shim
+  // wasn't there then) are cleaned when the page loads.
+  await p2.evaluate((linked) => {
+    localStorage["slock:tabMemory:v2:alpha:chat"] = linked;
+    localStorage["slock:last-location"] = JSON.stringify({ path: linked, ts: 7 });
+  }, linked);
+  await p2.reload();
+  const after = await p2.evaluate(() => ({
+    chat: localStorage.getItem("slock:tabMemory:v2:alpha:chat"),
+    last: JSON.parse(localStorage.getItem("slock:last-location")),
+    other: localStorage.getItem("other"),
+  }));
+  assert.equal(after.chat, `/s/alpha/channel/${C}?${thread}`);
+  assert.deepEqual(after.last, { path: `/s/alpha/channel/${C}?${thread}`, ts: 7 });
+  assert.equal(after.other, linked);
+  await p2.evaluate(() => localStorage.clear());
+  await p2.close();
 });
 
 await browser.close();

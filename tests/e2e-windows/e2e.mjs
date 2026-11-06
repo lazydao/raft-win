@@ -230,6 +230,42 @@ if (scenario === "online") {
     }
   });
 
+  // Raft remembers the last page of each server tab, query included, and
+  // goes back to it when the tab is clicked. A remembered ?msg= that can't
+  // be loaded showed "找不到这条消息" on every visit; raft_shim.js keeps
+  // these pages without ?msg=. The first visit below uses a link written
+  // past the shim (as older versions stored it), the second the page Raft
+  // remembered itself.
+  await check("a remembered chat page doesn't bring back a missing message's link", async () => {
+    const at = await page.evaluate(() => location.pathname);
+    const m = /^\/s\/([^/]+)\/(?:channel|dm)\/[^/]+$/.exec(at);
+    if (!m) { console.log(`       skipped: not on a chat page (${at})`); return; }
+    const slug = decodeURIComponent(m[1]);
+    const key = `slock:tabMemory:v2:${slug}:chat`;
+    const stale = `${at}?msg=00000000-0000-4000-8000-00000000e2e0`;
+    const stored = await page.evaluate(([key, stale]) => { localStorage.setItem(key, stale); return localStorage.getItem(key); }, [key, stale]);
+    assert.equal(stored, at, "Raft's remembered chat page kept ?msg=");
+    const notFound = () => page.evaluate(() => /找不到这条消息|Message not found/.test(document.body.innerText));
+    const visit = async () => {
+      await page.locator("[data-testid=left-rail-tab-members]").first().click();
+      await page.waitForFunction((at) => location.pathname !== at, at, { timeout: 10_000 });
+      await page.locator("[data-testid=left-rail-tab-chat]").first().click();
+      await page.waitForFunction((at) => location.pathname === at, at, { timeout: 10_000 });
+      let shown = false;
+      for (let i = 0; i < 10 && !shown; i++) { await page.waitForTimeout(500); shown = await notFound(); }
+      return { search: await page.evaluate(() => location.search), shown };
+    };
+    await page.evaluate(([key, stale]) => { localStorage[key] = stale; }, [key, stale]);
+    const first = await visit();
+    console.log(`       old remembered link: ${JSON.stringify(first)}`);
+    await page.waitForFunction(() => !/找不到这条消息|Message not found/.test(document.body.innerText), null, { timeout: 15_000 }).catch(() => {});
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), at, "Raft re-remembered the chat page with ?msg=");
+    const second = await visit();
+    console.log(`       after: ${JSON.stringify(second)}`);
+    assert.equal(second.search, "");
+    assert.ok(!second.shown, "找不到这条消息 shown again");
+  });
+
   await check("native handshake answers ok", async () => {
     const r = await call("desktop_handshake", {
       frontendReleaseId: "e2e", protocolVersion: 1,

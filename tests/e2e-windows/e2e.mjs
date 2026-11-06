@@ -161,7 +161,10 @@ if (scenario === "online") {
       const FILE = /\.(md|markdown|txt|pdf|png|jpe?g|gif|webp|svg|docx?|xlsx?|pptx?|csv|json|html?|zip|log)$/i;
       const seen = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.top >= 48 && r.bottom <= innerHeight; };
       const pictures = [...document.querySelectorAll("[data-timeline-row-key] img")].filter((e) => seen(e) && e.width >= 64 && e.height >= 48);
-      const files = [...document.querySelectorAll("[data-timeline-row-key] :is(button, a, [role=button])")].filter((e) => seen(e) && FILE.test((e.getAttribute("aria-label") || e.textContent || "").trim()));
+      // A link straight to the file (an attachment download) leaves the page
+      // instead of opening the viewer.
+      const leaves = (e) => e.tagName === "A" && /^https?:/i.test(e.getAttribute("href") || "") && new URL(e.href).origin !== location.origin;
+      const files = [...document.querySelectorAll("[data-timeline-row-key] :is(button, a, [role=button])")].filter((e) => seen(e) && !leaves(e) && FILE.test((e.getAttribute("aria-label") || e.textContent || "").trim()));
       const target = files[files.length - 1] || pictures[pictures.length - 1];
       if (!target) return null;
       target.setAttribute("data-pontoon-e2e-open", "");
@@ -237,14 +240,20 @@ if (scenario === "online") {
   // past the shim (as older versions stored it), the second the page Raft
   // remembered itself.
   await check("a remembered chat page doesn't bring back a missing message's link", async () => {
-    const at = await page.evaluate(() => location.pathname);
+    const { at, search } = await page.evaluate(() => ({ at: location.pathname, search: location.search }));
     const m = /^\/s\/([^/]+)\/(?:channel|dm)\/[^/]+$/.exec(at);
     if (!m) { console.log(`       skipped: not on a chat page (${at})`); return; }
     const slug = decodeURIComponent(m[1]);
     const key = `slock:tabMemory:v2:${slug}:chat`;
-    const stale = `${at}?msg=00000000-0000-4000-8000-00000000e2e0`;
+    // The page as it is (an open thread stays), plus a link to a message
+    // that doesn't exist.
+    const params = new URLSearchParams(search);
+    params.delete("msg");
+    const kept = params.toString() ? `${at}?${params}` : at;
+    params.set("msg", "00000000-0000-4000-8000-00000000e2e0");
+    const stale = `${at}?${params}`;
     const stored = await page.evaluate(([key, stale]) => { localStorage.setItem(key, stale); return localStorage.getItem(key); }, [key, stale]);
-    assert.equal(stored, at, "Raft's remembered chat page kept ?msg=");
+    assert.equal(stored, kept, "the remembered chat page was not stored without ?msg=");
     const notFound = () => page.evaluate(() => /找不到这条消息|Message not found/.test(document.body.innerText));
     const visit = async () => {
       await page.locator("[data-testid=left-rail-tab-members]").first().click();
@@ -255,14 +264,16 @@ if (scenario === "online") {
       for (let i = 0; i < 10 && !shown; i++) { await page.waitForTimeout(500); shown = await notFound(); }
       return { search: await page.evaluate(() => location.search), shown };
     };
+    // Only logged: Raft may not read the key back while the page is up.
     await page.evaluate(([key, stale]) => { localStorage[key] = stale; }, [key, stale]);
     const first = await visit();
     console.log(`       old remembered link: ${JSON.stringify(first)}`);
     await page.waitForFunction(() => !/找不到这条消息|Message not found/.test(document.body.innerText), null, { timeout: 15_000 }).catch(() => {});
-    assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), at, "Raft re-remembered the chat page with ?msg=");
+    const again = await page.evaluate((key) => localStorage.getItem(key), key);
+    assert.ok(!new URLSearchParams(again.split("?")[1] || "").has("msg"), `Raft re-remembered the chat page with ?msg=: ${again}`);
     const second = await visit();
     console.log(`       after: ${JSON.stringify(second)}`);
-    assert.equal(second.search, "");
+    assert.ok(!new URLSearchParams(second.search).has("msg"), `chat reopened with ?msg=: ${second.search}`);
     assert.ok(!second.shown, "找不到这条消息 shown again");
   });
 

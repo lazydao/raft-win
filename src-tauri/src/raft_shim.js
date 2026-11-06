@@ -20,6 +20,13 @@
 //   4. Links to Raft stay in Pontoon: Raft's "Open in Raft Desktop?" banner
 //      (shown to accounts that used the official app lately) is answered
 //      "web" once, unless the user already chose.
+//   5. Pages the web client remembers (the last page of each server and of
+//      each of its tabs, and the last page overall) are kept without the
+//      message they pointed at (?msg=). Raft goes back to these pages when
+//      you switch to a server or click a tab such as Chat, and with ?msg= it
+//      looks that message up again every time; once it can't be loaded (a
+//      deleted or replaced message), every switch shows "找不到这条消息".
+//      The page itself, an open thread included, is still restored.
 //
 // Server ids, slugs and names come from the web client's own GET /api/servers
 // (or a request of our own if that is not seen) and are kept in localStorage.
@@ -30,6 +37,55 @@
 
   try {
     if (localStorage.getItem("raft_link_open_preference") === null) localStorage.setItem("raft_link_open_preference", "web");
+  } catch {}
+
+  // ---- 5. Remembered pages without a message to jump to ----
+
+  const withoutMessage = (path) => {
+    if (typeof path !== "string" || !path.startsWith("/")) return path;
+    const hashAt = path.indexOf("#");
+    const hash = hashAt === -1 ? "" : path.slice(hashAt);
+    const rest = hashAt === -1 ? path : path.slice(0, hashAt);
+    const queryAt = rest.indexOf("?");
+    if (queryAt === -1) return path;
+    const params = new URLSearchParams(rest.slice(queryAt + 1));
+    if (!params.has("msg")) return path;
+    params.delete("msg");
+    const query = params.toString();
+    return rest.slice(0, queryAt) + (query ? `?${query}` : "") + hash;
+  };
+  // The value to store under `key` instead of `value`, for the keys above.
+  const remembered = (key, value) => {
+    if (typeof key !== "string" || typeof value !== "string") return value;
+    if (key.startsWith("slock:tabMemory:") || key.startsWith("slock:serverSurface:")) return withoutMessage(value);
+    if (key === "slock:last-location") {
+      try {
+        const v = JSON.parse(value);
+        if (v && typeof v.path === "string") {
+          const path = withoutMessage(v.path);
+          if (path !== v.path) return JSON.stringify({ ...v, path });
+        }
+      } catch {}
+    }
+    return value;
+  };
+  const setItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = function (key, value) {
+    if (this === window.localStorage) {
+      try {
+        value = remembered(String(key), String(value));
+      } catch {}
+    }
+    return setItem.call(this, key, value);
+  };
+  // What was remembered before this version.
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      const value = localStorage.getItem(key);
+      const clean = remembered(key, value);
+      if (clean !== value) setItem.call(localStorage, key, clean);
+    }
   } catch {}
 
   const API = "https://api.raft.build/api";
